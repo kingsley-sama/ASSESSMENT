@@ -68,11 +68,10 @@ export default function HomeClient() {
 
     setIsJoining(true);
     try {
-      // Set user first
       const userId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
       setUser({ id: userId, username: username.trim() });
       
-      // Join room
+  
       await joinRoom(roomId.trim(), username.trim());
       
       toast.success('Joined room successfully!');
@@ -97,10 +96,10 @@ export default function HomeClient() {
             <MessageCircle className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-white">
-            Real-time Chat
+            JoyRoom
           </h1>
           <p className="text-gray-600 dark:text-gray-400">
-            Connect with others instantly
+                        Welcome to JoyRoom
           </p>
         </div>
 
@@ -216,7 +215,7 @@ export default function HomeClient() {
         </Card>
 
         <div className="text-center text-sm text-gray-500 dark:text-gray-400">
-          <p>Start chatting with friends and colleagues in real-time</p>
+          <p>Property of Javat 365</p>
         </div>
       </div>
     </div>

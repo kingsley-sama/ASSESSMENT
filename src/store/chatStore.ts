@@ -156,12 +156,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
     socket.on('room-joined', ({ room, users, messages }: { room: any; users: any[]; messages?: any[] }) => {
       console.log('Room joined:', room, 'with', messages?.length || 0, 'messages');
       set((state) => {
+        // Format messages to match the expected Message interface
+        const formattedMessages = (messages || []).map((msg: any) => ({
+          id: msg.id,
+          content: msg.content,
+          userId: msg.userId,
+          username: msg.username,
+          roomId: msg.roomId,
+          type: msg.type === 'SYSTEM' ? 'system' as const : 'user' as const,
+          createdAt: new Date(msg.createdAt)
+        }));
+
         const roomWithTyping = {
           ...room,
           unreadCount: 0,
           isTyping: [],
           users: users,
-          messages: messages || []
+          messages: formattedMessages
         };
 
         const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
@@ -310,6 +321,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Clean the room data (remove the extra properties we added)
       const { joinedAsExistingUser, existingUserId, ...room } = roomData;
       
+      // Format messages to match the expected Message interface
+      const formattedMessages = (room.messages || []).map((msg: any) => ({
+        id: msg.id,
+        content: msg.content,
+        userId: msg.userId,
+        username: msg.username,
+        roomId: msg.roomId,
+        type: msg.type === 'SYSTEM' ? 'system' as const : 'user' as const,
+        createdAt: new Date(msg.createdAt)
+      }));
+
+      // Update the room object with formatted messages
+      const roomWithFormattedMessages = {
+        ...room,
+        messages: formattedMessages
+      };
+      
       // Join socket room if socket is connected
       const currentUserId = roomData.joinedAsExistingUser ? roomData.existingUserId : user.id;
       if (socket?.connected) {
@@ -321,14 +349,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       // Update state
       set((state) => {
-        const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
+        const existingRoomIndex = state.rooms.findIndex(r => r.id === roomWithFormattedMessages.id);
         const updatedRooms = existingRoomIndex >= 0 
-          ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...room, unreadCount: 0, isTyping: [] } : r)
-          : [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }];
+          ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...roomWithFormattedMessages, unreadCount: 0, isTyping: [] } : r)
+          : [...state.rooms, { ...roomWithFormattedMessages, unreadCount: 0, isTyping: [] }];
 
         return {
           rooms: updatedRooms,
-          currentRoom: { ...room, unreadCount: 0, isTyping: [] },
+          currentRoom: { ...roomWithFormattedMessages, unreadCount: 0, isTyping: [] },
           isLoading: false,
           error: null
         };

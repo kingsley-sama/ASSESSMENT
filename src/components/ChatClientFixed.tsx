@@ -1,7 +1,5 @@
 "use client"
 
-import type React from "react"
-
 import { useEffect, useState, useRef, useCallback } from "react"
 import { useRouter, useParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -38,16 +36,13 @@ export default function ChatClient() {
   const inputRef = useRef<HTMLInputElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout>()
 
-  // Handle async params
+  // State
   const [roomId, setRoomId] = useState<string>("")
   const [message, setMessage] = useState("")
   const [isTyping, setIsTyping] = useState(false)
-  const [showUserDialog, setShowUserDialog] = useState(false)
-  const [userToRemove, setUserToRemove] = useState<string | null>(null)
-  const [showRemoveDialog, setShowRemoveDialog] = useState(false)
   const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
-  const [userInitialized, setUserInitialized] = useState(false) // Track if we've tried to initialize user
+  const [userInitialized, setUserInitialized] = useState(false)
 
   const {
     socket,
@@ -62,19 +57,17 @@ export default function ChatClient() {
     leaveRoom,
     sendMessage: sendSocketMessage,
     setCurrentRoom,
-    loadUserRooms,
-    clearError,
-    setUser, // Add setUser to the destructured properties
+    setUser,
   } = useChatStore()
 
-  // Handle async params resolution
+  // Initialize params
   useEffect(() => {
     if (params?.roomId) {
       setRoomId(params.roomId as string)
     }
   }, [params])
 
-  // Initialize user from localStorage if not already set
+  // Initialize user from localStorage
   useEffect(() => {
     if (!user && !userInitialized) {
       setUserInitialized(true)
@@ -87,12 +80,10 @@ export default function ChatClient() {
         } catch (error) {
           console.error("Error parsing stored user data:", error)
           localStorage.removeItem("user")
-          // Redirect to home to set up user if localStorage is corrupted
           setTimeout(() => router.push("/"), 1000)
         }
       } else {
         console.log("No user found in localStorage, redirecting to home")
-        // No user data found, redirect to setup after a short delay
         setTimeout(() => router.push("/"), 1000)
       }
     }
@@ -105,23 +96,11 @@ export default function ChatClient() {
     }
   }, [socket, initializeSocket])
 
-  // Handle errors
-  useEffect(() => {
-    if (error) {
-      toast({
-        title: "Error",
-        description: error,
-        variant: "destructive",
-      })
-      clearError()
-    }
-  }, [error, clearError, toast])
-
-  // Join room when roomId is available and socket is connected
+  // Join room
   useEffect(() => {
     if (roomId && user && isConnected) {
-      // Check if we're already in this room
       if (currentRoom?.id !== roomId) {
+        console.log("Attempting to join room:", roomId, "with user:", user.username)
         joinRoom(roomId, user.username).catch((error) => {
           console.error("Failed to join room:", error)
           toast({
@@ -131,12 +110,23 @@ export default function ChatClient() {
           })
           router.push("/")
         })
-      } else {
-        setCurrentRoom(roomId)
       }
     }
-  }, [roomId, user, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router, toast])
+  }, [roomId, user, isConnected, currentRoom?.id, joinRoom, router, toast])
 
+  // Debug logging
+  useEffect(() => {
+    console.log('=== DEBUG INFO ===')
+    console.log('Current room:', currentRoom)
+    console.log('Messages count:', currentRoom?.messages?.length || 0)
+    console.log('Messages:', currentRoom?.messages)
+    console.log('Socket connected:', isConnected)
+    console.log('User:', user)
+    console.log('Room ID:', roomId)
+    console.log('================')
+  }, [currentRoom, isConnected, user, roomId])
+
+  // Auto scroll to bottom
   const scrollToBottom = useCallback(() => {
     if (scrollAreaRef.current) {
       const scrollContainer = scrollAreaRef.current.querySelector("[data-radix-scroll-area-viewport]")
@@ -150,110 +140,7 @@ export default function ChatClient() {
     scrollToBottom()
   }, [currentRoom?.messages, scrollToBottom])
 
-  useEffect(() => {
-    if (!socket || !roomId) return
-
-    const handleUserJoined = ({
-      username,
-      userId,
-      joinedAt,
-    }: { username: string; userId: string; joinedAt: string }) => {
-      toast({
-        title: "User joined",
-        description: `${username} joined the room`,
-      })
-    }
-
-    const handleUserLeft = ({ userId, username }: { userId: string; username: string }) => {
-      toast({
-        title: "User left",
-        description: `${username} left the room`,
-      })
-    }
-
-    const handleUserRemoved = ({ userId, username }: { userId: string; username: string }) => {
-      if (userId === user?.id) {
-        toast({
-          title: "Removed from room",
-          description: "You have been removed from this room",
-          variant: "destructive",
-        })
-        router.push("/")
-      } else {
-        toast({
-          title: "User removed",
-          description: `${username} was removed from the room`,
-        })
-      }
-    }
-
-    const handleRemovedFromRoom = ({ roomId: removedRoomId }: { roomId: string }) => {
-      if (removedRoomId === roomId) {
-        toast({
-          title: "Removed from room",
-          description: "You have been removed from this room",
-          variant: "destructive",
-        })
-        router.push("/")
-      }
-    }
-
-    const handleOwnershipTransferred = ({
-      newOwnerId,
-      newOwnerUsername,
-    }: { newOwnerId: string; newOwnerUsername: string }) => {
-      toast({
-        title: "New room owner",
-        description: `${newOwnerUsername} is now the room owner`,
-      })
-    }
-
-    socket.on("user-joined", handleUserJoined)
-    socket.on("user-left", handleUserLeft)
-    socket.on("user-removed", handleUserRemoved)
-    socket.on("removed-from-room", handleRemovedFromRoom)
-    socket.on("ownership-transferred", handleOwnershipTransferred)
-
-    return () => {
-      socket.off("user-joined", handleUserJoined)
-      socket.off("user-left", handleUserLeft)
-      socket.off("user-removed", handleUserRemoved)
-      socket.off("removed-from-room", handleRemovedFromRoom)
-      socket.off("ownership-transferred", handleOwnershipTransferred)
-    }
-  }, [socket, roomId, user?.id, toast, router])
-
-  // Add debug logging for messages
-  useEffect(() => {
-    console.log("Current room messages:", currentRoom?.messages?.length || 0)
-    console.log("Socket connected:", isConnected)
-    console.log("Current room ID:", currentRoom?.id)
-    console.log("Target room ID:", roomId)
-  }, [currentRoom?.messages, isConnected, currentRoom?.id, roomId])
-
-  const handleTyping = () => {
-    if (!isTyping && isConnected && socket && user && roomId) {
-      setIsTyping(true)
-      socket.emit("typing", { roomId, userId: user.id, username: user.username })
-    }
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-    }
-    typingTimeoutRef.current = setTimeout(() => {
-      stopTyping()
-    }, 1000)
-  }
-
-  const stopTyping = () => {
-    if (isTyping && socket && user && roomId) {
-      setIsTyping(false)
-      socket.emit("stop-typing", { roomId, userId: user.id, username: user.username })
-    }
-    if (typingTimeoutRef.current) {
-      clearTimeout(typingTimeoutRef.current)
-    }
-  }
-
+  // Message handlers
   const handleSendMessage = () => {
     if (!message.trim() || !roomId || !isConnected) {
       if (!isConnected) {
@@ -266,9 +153,8 @@ export default function ChatClient() {
       return
     }
 
-    stopTyping()
+    console.log("Sending message:", message.trim(), "to room:", roomId)
     sendSocketMessage(message.trim(), roomId)
-    setCurrentRoom(roomId)
     setMessage("")
   }
 
@@ -280,15 +166,7 @@ export default function ChatClient() {
   }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value
-    setMessage(value)
-
-    // Only trigger typing if we have a value and are connected
-    if (value.trim() && isConnected) {
-      handleTyping()
-    } else {
-      stopTyping()
-    }
+    setMessage(e.target.value)
   }
 
   const handleEmojiSelect = (emoji: string) => {
@@ -314,7 +192,7 @@ export default function ChatClient() {
     }
   }
 
-  // Show loading state - improved conditions
+  // Loading states
   if (!roomId) {
     return (
       <div className="flex items-center justify-center h-screen">
@@ -366,7 +244,7 @@ export default function ChatClient() {
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
           <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4 text-lg">Loading room...</p>
+          <p className="mt-4 text-lg">Loading room data...</p>
           {!isConnected && <p className="mt-2 text-sm text-muted-foreground">Connecting to server...</p>}
         </div>
       </div>
@@ -375,43 +253,21 @@ export default function ChatClient() {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Mobile Overlay */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 bg-black/50 z-40 lg:hidden" onClick={() => setSidebarOpen(false)} />
-      )}
-
       {/* Sidebar */}
-      <div
-        className={`
-        fixed lg:relative inset-y-0 left-0 z-50 lg:z-auto
-        w-80 lg:w-80 md:w-16 lg:translate-x-0 transition-transform duration-300 ease-in-out
-        ${sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
-        border-r bg-card flex flex-col
-      `}
-      >
+      <div className="w-80 border-r bg-card flex flex-col">
         {/* Header */}
-        <div className="p-4 lg:p-4 md:p-2 border-b">
+        <div className="p-4 border-b">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold lg:block md:hidden">Chat Room</h2>
+            <h2 className="text-lg font-semibold">Chat Room</h2>
             <div className="flex items-center gap-2">
               <ThemeToggle />
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleLeaveRoom}
-                title="Leave Room"
-                className="lg:inline-flex md:inline-flex"
-              >
+              <Button variant="ghost" size="icon" onClick={handleLeaveRoom} title="Leave Room">
                 <LogOut className="h-4 w-4" />
-              </Button>
-              {/* Mobile close button */}
-              <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(false)} className="lg:hidden">
-                <X className="h-4 w-4" />
               </Button>
             </div>
           </div>
 
-          <div className="space-y-2 lg:block md:hidden">
+          <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Badge variant="secondary" className="font-mono text-xs">
                 {currentRoom.name}
@@ -426,77 +282,53 @@ export default function ChatClient() {
               {isConnected ? "Connected" : "Disconnected"}
             </div>
           </div>
-
-          {/* Mobile-only connection indicator */}
-          <div className="lg:hidden md:block hidden">
-            <div className={`w-3 h-3 rounded-full mx-auto ${isConnected ? "bg-green-500" : "bg-red-500"}`} />
-          </div>
         </div>
 
         {/* Users List */}
-        <div className="flex-1 overflow-hidden">
-          <div className="p-4 lg:p-4 md:p-2">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-medium flex items-center gap-2 lg:flex md:hidden">
-                <Users className="h-4 w-4" />
-                Users ({currentRoom.users?.length || 0})
-              </h3>
-              {/* Mobile users icon only */}
-              <div className="lg:hidden md:block hidden">
-                <Users className="h-4 w-4 mx-auto" />
-              </div>
-            </div>
+        <div className="flex-1 overflow-hidden p-4">
+          <h3 className="text-sm font-medium flex items-center gap-2 mb-3">
+            <Users className="h-4 w-4" />
+            Users ({currentRoom.users?.length || 0})
+          </h3>
 
-            <ScrollArea className="h-[calc(100vh-300px)]">
-              <div className="space-y-2">
-                {currentRoom.users?.map((roomUser) => (
-                  <div
-                    key={roomUser.id}
-                    className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50 transition-colors lg:flex md:justify-center"
-                  >
-                    <Avatar className="h-8 w-8 lg:h-8 lg:w-8 md:h-6 md:w-6">
-                      <AvatarFallback
-                        style={{ backgroundColor: generateColor(roomUser.username) }}
-                        className="text-white text-xs font-medium"
-                      >
-                        {roomUser.username.slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-
-                    <div className="flex-1 min-w-0 lg:block md:hidden">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium truncate">{roomUser.username}</span>
-                        {roomUser.id === currentRoom.ownerId && <Crown className="h-3 w-3 text-yellow-500" />}
-                        {roomUser.id === user?.id && (
-                          <Badge variant="secondary" className="text-xs px-1 py-0">
-                            You
-                          </Badge>
-                        )}
-                      </div>
+          <ScrollArea className="h-[calc(100vh-300px)]">
+            <div className="space-y-2">
+              {currentRoom.users?.map((roomUser) => (
+                <div key={roomUser.id} className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50">
+                  <Avatar className="h-8 w-8">
+                    <AvatarFallback
+                      style={{ backgroundColor: generateColor(roomUser.username) }}
+                      className="text-white text-xs font-medium"
+                    >
+                      {roomUser.username.slice(0, 2).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{roomUser.username}</span>
+                      {roomUser.id === currentRoom.ownerId && <Crown className="h-3 w-3 text-yellow-500" />}
+                      {roomUser.id === user?.id && (
+                        <Badge variant="secondary" className="text-xs px-1 py-0">
+                          You
+                        </Badge>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            </ScrollArea>
-          </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
         </div>
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col lg:ml-0 md:ml-16">
+      <div className="flex-1 flex flex-col">
         {/* Chat Header */}
         <div className="p-4 border-b bg-card">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              {/* Mobile menu button */}
-              <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} className="lg:hidden">
-                <Menu className="h-4 w-4" />
-              </Button>
-
-              <div>
-                <h1 className="text-xl font-semibold">{currentRoom.name}</h1>
-                <p className="text-sm text-muted-foreground">{currentRoom.users?.length || 0} members</p>
-              </div>
+            <div>
+              <h1 className="text-xl font-semibold">{currentRoom.name}</h1>
+              <p className="text-sm text-muted-foreground">{currentRoom.users?.length || 0} members</p>
             </div>
           </div>
         </div>
@@ -505,13 +337,18 @@ export default function ChatClient() {
         <div className="flex-1 overflow-hidden">
           <ScrollArea ref={scrollAreaRef} className="h-full p-4">
             <div className="space-y-4">
-              {currentRoom.messages?.length === 0 ? (
+              {!currentRoom.messages || currentRoom.messages.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
                   <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <p>No messages yet. Start the conversation!</p>
+                  <p className="text-xs mt-2">
+                    Debug: Room has {currentRoom.messages?.length || 0} messages
+                  </p>
+                  <p className="text-xs">Room ID: {currentRoom.id}</p>
+                  <p className="text-xs">User ID: {user?.id}</p>
                 </div>
               ) : (
-                currentRoom.messages?.map((msg, index) => {
+                currentRoom.messages.map((msg, index) => {
                   const isCurrentUser = msg.userId === user?.id
                   const showAvatar = index === 0 || currentRoom.messages[index - 1]?.userId !== msg.userId
 
@@ -528,7 +365,7 @@ export default function ChatClient() {
                               style={{ backgroundColor: generateColor(msg.username) }}
                               className="text-white text-xs font-medium"
                             >
-                              {msg.username.slice(0, 2).toUpperCase()}
+                              {msg.username?.slice(0, 2).toUpperCase() || 'U'}
                             </AvatarFallback>
                           </Avatar>
                         ) : (
@@ -538,14 +375,16 @@ export default function ChatClient() {
 
                       {/* Message Content */}
                       <div
-                        className={`flex-1 max-w-[70%] sm:max-w-[85%] ${isCurrentUser ? "text-right" : "text-left"}`}
+                        className={`flex-1 max-w-[70%] ${isCurrentUser ? "text-right" : "text-left"}`}
                       >
                         {showAvatar && (
                           <div
                             className={`flex items-center gap-2 mb-1 ${isCurrentUser ? "justify-end" : "justify-start"}`}
                           >
-                            <span className="text-sm font-medium">{msg.username}</span>
-                            <span className="text-xs text-muted-foreground">{formatTime(msg.createdAt)}</span>
+                            <span className="text-sm font-medium">{msg.username || 'Unknown User'}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {msg.createdAt ? formatTime(msg.createdAt) : 'Unknown time'}
+                            </span>
                           </div>
                         )}
 
@@ -554,33 +393,12 @@ export default function ChatClient() {
                             isCurrentUser ? "bg-primary text-primary-foreground" : "bg-muted"
                           }`}
                         >
-                          <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                          <p className="text-sm whitespace-pre-wrap">{msg.content || 'Empty message'}</p>
                         </div>
                       </div>
                     </div>
                   )
                 })
-              )}
-              {/* Typing indicator */}
-              {currentRoom.isTyping && currentRoom.isTyping.length > 0 && (
-                <div className="flex items-center space-x-2 text-sm text-muted-foreground">
-                  <div className="flex space-x-1">
-                    <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"></div>
-                    <div
-                      className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"
-                      style={{ animationDelay: "0.1s" }}
-                    ></div>
-                    <div
-                      className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"
-                      style={{ animationDelay: "0.2s" }}
-                    ></div>
-                  </div>
-                  <span>
-                    {currentRoom.isTyping.length === 1
-                      ? `${currentRoom.isTyping[0]} is typing...`
-                      : `${currentRoom.isTyping.length} people are typing...`}
-                  </span>
-                </div>
               )}
             </div>
           </ScrollArea>
