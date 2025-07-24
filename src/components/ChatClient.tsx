@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { socket } from '@/lib/socket';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
@@ -12,15 +11,13 @@ import { Badge } from '@/components/ui/badge';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { useChatStore } from '@/store/chatStore';
 import { useToast } from '@/hooks/use-toast';
-import { LogOut, Send, Copy, Plus, MessageSquare, Users, Crown, UserX, Settings, Smile } from 'lucide-react';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { LogOut, Send, Copy, Plus, MessageSquare, Users, Crown, UserX, Smile } from 'lucide-react';
 import { EmojiPicker } from '@/components/EmojiPicker';
 import { ThemeToggle } from '@/components/ThemeToggle';
-import type { Room, User, Message } from '@/store/chatStore';
 
-const generateUserId = () => Math.random().toString(36).substring(2, 15);
 const generateColor = (str: string) => {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {
@@ -40,27 +37,6 @@ export default function ChatClient() {
   
   // Handle async params
   const [roomId, setRoomId] = useState<string>('');
-  
-  const {
-    username,
-    userId,
-    rooms,
-    activeRoomId,
-    isConnected,
-    setUserId,
-    addRoom,
-    setActiveRoom,
-    addMessage,
-    setMessages,
-    updateRoomUsers,
-    transferOwnership,
-    addTypingUser,
-    removeTypingUser,
-    clearTypingUsers,
-    getActiveRoom,
-    setConnected,
-  } = useChatStore();
-
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showUserDialog, setShowUserDialog] = useState(false);
@@ -68,9 +44,22 @@ export default function ChatClient() {
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
-  const activeRoom = getActiveRoom();
-  const currentUser = activeRoom?.users.find(u => u.id === userId);
-  const isOwner = currentUser?.isOwner || false;
+  const {
+    socket,
+    currentRoom,
+    rooms,
+    user,
+    isConnected,
+    isLoading,
+    error,
+    initializeSocket,
+    joinRoom,
+    leaveRoom,
+    sendMessage: sendSocketMessage,
+    setCurrentRoom,
+    loadUserRooms,
+    clearError,
+  } = useChatStore();
 
   // Handle async params resolution
   useEffect(() => {
@@ -83,6 +72,40 @@ export default function ChatClient() {
     resolveParams();
   }, [params]);
 
+  // Initialize socket
+  useEffect(() => {
+    if (!socket) {
+      initializeSocket();
+    }
+  }, [socket, initializeSocket]);
+
+  // Handle errors
+  useEffect(() => {
+    if (error) {
+      toast({
+        title: "Error",
+        description: error,
+        variant: "destructive",
+      });
+      clearError();
+    }
+  }, [error, clearError, toast]);
+
+  // Join room when roomId is available
+  useEffect(() => {
+    if (roomId && user && socket && isConnected) {
+      // Check if we're already in this room
+      if (currentRoom?.id !== roomId) {
+        joinRoom(roomId, user.username).catch((error) => {
+          console.error('Failed to join room:', error);
+          router.push('/');
+        });
+      } else {
+        setCurrentRoom(roomId);
+      }
+    }
+  }, [roomId, user, socket, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router]);
+
   // Auto-scroll to bottom of messages
   const scrollToBottom = useCallback(() => {
     if (scrollAreaRef.current) {
@@ -93,182 +116,74 @@ export default function ChatClient() {
     }
   }, []);
 
-  // Initialize user ID if not set
-  useEffect(() => {
-    if (!userId) {
-      setUserId(generateUserId());
-    }
-  }, [userId, setUserId]);
-
-  // Socket connection and room joining
-  useEffect(() => {
-    if (!roomId || !username || !userId) {
-      if (roomId) { // Only redirect if we have roomId but missing other params
-        router.push('/');
-      }
-      return;
-    }
-
-    socket.connect();
-    setConnected(true);
-
-    // Join room
-    socket.emit('join-room', { roomId, username, userId });
-    setActiveRoom(roomId);
-
-    // Socket event listeners
-    socket.on('connect', () => {
-      setConnected(true);
-      console.log('Connected to server');
-    });
-
-    socket.on('disconnect', () => {
-      setConnected(false);
-      console.log('Disconnected from server');
-    });
-
-    socket.on('room-joined', (data) => {
-      const { room, users } = data;
-      const roomData: Room = {
-        id: room.id,
-        name: room.name,
-        ownerId: room.ownerId,
-        users: users.map((user: any) => ({
-          id: user.userId,
-          username: user.username,
-          joinedAt: new Date(user.joinedAt),
-          isOwner: user.isOwner,
-        })),
-        messages: room.messages.map((msg: any) => ({
-          id: msg.id,
-          message: msg.content,
-          username: msg.username,
-          userId: msg.userId,
-          timestamp: new Date(msg.createdAt),
-          type: msg.type,
-        })),
-        unreadCount: 0,
-        isTyping: [],
-      };
-      addRoom(roomData);
-    });
-
-    socket.on('receive-message', (msg) => {
-      const messageData: Message = {
-        id: msg.id,
-        message: msg.message,
-        username: msg.username,
-        userId: msg.userId,
-        timestamp: new Date(msg.timestamp),
-        type: msg.type,
-      };
-      addMessage(roomId, messageData);
-      setTimeout(scrollToBottom, 100);
-    });
-
-    socket.on('user-joined', (data) => {
-      toast({
-        title: "User joined",
-        description: `${data.username} joined the room`,
-      });
-    });
-
-    socket.on('user-left', (data) => {
-      toast({
-        title: "User left",
-        description: `${data.username} left the room`,
-      });
-    });
-
-    socket.on('users-updated', (users) => {
-      updateRoomUsers(roomId, users.map((user: any) => ({
-        id: user.userId,
-        username: user.username,
-        joinedAt: new Date(user.joinedAt),
-        isOwner: user.isOwner,
-      })));
-    });
-
-    socket.on('user-typing', (data) => {
-      addTypingUser(roomId, data.username);
-    });
-
-    socket.on('user-stop-typing', (data) => {
-      removeTypingUser(roomId, data.username);
-    });
-
-    socket.on('user-removed', (data) => {
-      toast({
-        title: "User removed",
-        description: `${data.username} was removed from the room`,
-        variant: "destructive",
-      });
-    });
-
-    socket.on('removed-from-room', () => {
-      toast({
-        title: "Removed from room",
-        description: "You have been removed from this room",
-        variant: "destructive",
-      });
-      router.push('/');
-    });
-
-    socket.on('ownership-transferred', (data) => {
-      transferOwnership(roomId, data.newOwnerId);
-      toast({
-        title: "Ownership transferred",
-        description: `${data.newOwnerUsername} is now the room owner`,
-      });
-    });
-
-    socket.on('error', (error) => {
-      toast({
-        title: "Error",
-        description: error,
-        variant: "destructive",
-      });
-    });
-
-    return () => {
-      if (typingTimeoutRef.current) {
-        clearTimeout(typingTimeoutRef.current);
-      }
-      
-      socket.emit('leave-room', { roomId, userId, username });
-      socket.off('connect');
-      socket.off('disconnect');
-      socket.off('room-joined');
-      socket.off('receive-message');
-      socket.off('user-joined');
-      socket.off('user-left');
-      socket.off('user-typing');
-      socket.off('user-stop-typing');
-      socket.off('user-removed');
-      socket.off('removed-from-room');
-      socket.off('ownership-transferred');
-      socket.off('error');
-      socket.disconnect();
-    };
-  }, [roomId, username, router, addRoom, setActiveRoom, addMessage, setMessages, updateRoomUsers, transferOwnership, addTypingUser, removeTypingUser, clearTypingUsers, toast, scrollToBottom, isConnected, userId, setConnected]);
-
   // Auto-scroll when messages change
   useEffect(() => {
     scrollToBottom();
-  }, [activeRoom?.messages, scrollToBottom]);
+  }, [currentRoom?.messages, scrollToBottom]);
 
-  const sendMessage = () => {
-    if (!message.trim() || !activeRoomId || !isConnected) return;
+  // Socket event listeners for room-specific events
+  useEffect(() => {
+    if (!socket || !roomId) return;
+
+    const handleUserJoined = ({ user: joinedUser, roomId: eventRoomId }: { user: any; roomId: string }) => {
+      if (eventRoomId === roomId) {
+        toast({
+          title: "User joined",
+          description: `${joinedUser.username} joined the room`,
+        });
+      }
+    };
+
+    const handleUserLeft = ({ userId, username, roomId: eventRoomId }: { userId: string; username: string; roomId: string }) => {
+      if (eventRoomId === roomId) {
+        toast({
+          title: "User left",
+          description: `${username} left the room`,
+        });
+      }
+    };
+
+    const handleUserRemoved = ({ userId, username, roomId: eventRoomId }: { userId: string; username: string; roomId: string }) => {
+      if (eventRoomId === roomId) {
+        if (userId === user?.id) {
+          toast({
+            title: "Removed from room",
+            description: "You have been removed from this room",
+            variant: "destructive",
+          });
+          router.push('/');
+        } else {
+          toast({
+            title: "User removed",
+            description: `${username} was removed from the room`,
+          });
+        }
+      }
+    };
+
+    socket.on('userJoined', handleUserJoined);
+    socket.on('userLeft', handleUserLeft);
+    socket.on('userRemoved', handleUserRemoved);
+
+    return () => {
+      socket.off('userJoined', handleUserJoined);
+      socket.off('userLeft', handleUserLeft);
+      socket.off('userRemoved', handleUserRemoved);
+    };
+  }, [socket, roomId, user?.id, toast, router]);
+
+  const handleSendMessage = () => {
+    if (!message.trim() || !roomId || !isConnected) return;
     
     stopTyping();
-    socket.emit('send-message', { roomId: activeRoomId, message: message.trim(), username, userId });
+    sendSocketMessage(message.trim(), roomId);
     setMessage('');
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      sendMessage();
+      handleSendMessage();
     }
   };
 
@@ -278,9 +193,9 @@ export default function ChatClient() {
   };
 
   const handleTyping = () => {
-    if (!isTyping && isConnected) {
+    if (!isTyping && isConnected && socket && user) {
       setIsTyping(true);
-      socket.emit('user-typing', { roomId: activeRoomId, username });
+      socket.emit('typing', { roomId, userId: user.id, username: user.username });
     }
 
     if (typingTimeoutRef.current) {
@@ -293,17 +208,20 @@ export default function ChatClient() {
   };
 
   const stopTyping = () => {
-    if (isTyping) {
+    if (isTyping && socket && user) {
       setIsTyping(false);
-      socket.emit('user-stop-typing', { roomId: activeRoomId, username });
+      socket.emit('stopTyping', { roomId, userId: user.id, username: user.username });
     }
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
     }
   };
 
-  const leaveRoom = () => {
-    router.push('/');
+  const handleLeaveRoom = async () => {
+    if (roomId) {
+      await leaveRoom(roomId);
+      router.push('/');
+    }
   };
 
   const copyRoomId = () => {
@@ -315,12 +233,12 @@ export default function ChatClient() {
   };
 
   const removeUser = (userIdToRemove: string) => {
-    if (!isOwner) return;
+    if (!isOwner || !socket || !user) return;
     
-    socket.emit('remove-user', {
-      roomId: activeRoomId,
+    socket.emit('removeUser', {
+      roomId,
       userIdToRemove,
-      requesterId: userId,
+      requesterId: user.id,
     });
     setShowRemoveDialog(false);
     setUserToRemove(null);
@@ -336,8 +254,8 @@ export default function ChatClient() {
     return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Show loading state while resolving params
-  if (!roomId) {
+  // Show loading state
+  if (!roomId || isLoading) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
@@ -348,7 +266,7 @@ export default function ChatClient() {
     );
   }
 
-  if (!activeRoom) {
+  if (!currentRoom) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
@@ -358,6 +276,9 @@ export default function ChatClient() {
       </div>
     );
   }
+
+  const currentUser = currentRoom.users.find(u => u.userId === user?.id);
+  const isOwner = currentUser?.isOwner || false;
 
   return (
     <div className="h-screen flex flex-col">
@@ -381,10 +302,10 @@ export default function ChatClient() {
               {rooms.map((room) => (
                 <div key={room.id}>
                   <Button
-                    variant={room.id === activeRoomId ? 'secondary' : 'ghost'}
+                    variant={room.id === currentRoom.id ? 'secondary' : 'ghost'}
                     className="w-full justify-start mb-1 h-auto p-3"
                     onClick={() => {
-                      setActiveRoom(room.id);
+                      setCurrentRoom(room.id);
                       router.push(`/chat/${room.id}`);
                     }}
                   >
@@ -411,17 +332,17 @@ export default function ChatClient() {
           <div className="p-4">
             <div className="flex items-center space-x-2">
               <Avatar className="h-8 w-8">
-                <AvatarFallback style={{ backgroundColor: generateColor(username) }}>
-                  {username.slice(0, 2).toUpperCase()}
+                <AvatarFallback style={{ backgroundColor: generateColor(user?.username || '') }}>
+                  {user?.username.slice(0, 2).toUpperCase()}
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{username}</p>
+                <p className="text-sm font-medium truncate">{user?.username}</p>
                 <p className="text-xs text-muted-foreground">
                   {isConnected ? 'Online' : 'Offline'}
                 </p>
               </div>
-              <Button variant="ghost" size="sm" onClick={leaveRoom}>
+              <Button variant="ghost" size="sm" onClick={handleLeaveRoom}>
                 <LogOut className="h-4 w-4" />
               </Button>
             </div>
@@ -435,7 +356,7 @@ export default function ChatClient() {
             <div className="flex items-center space-x-4">
               <div>
                 <h2 className="text-2xl font-bold flex items-center">
-                  {activeRoom.name || 'Chat Room'}
+                  {currentRoom.name || 'Chat Room'}
                   {isOwner && <Crown className="h-5 w-5 ml-2 text-yellow-500" />}
                 </h2>
                 <div className="flex items-center space-x-2">
@@ -459,7 +380,7 @@ export default function ChatClient() {
                 <DialogTrigger asChild>
                   <Button variant="outline" size="sm">
                     <Users className="h-4 w-4 mr-2" />
-                    {activeRoom.users.length} users
+                    {currentRoom.users.length} users
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
@@ -467,31 +388,31 @@ export default function ChatClient() {
                     <DialogTitle>Room Users</DialogTitle>
                   </DialogHeader>
                   <div className="space-y-2">
-                    {activeRoom.users.map((user) => (
-                      <div key={user.id} className="flex items-center justify-between p-2 rounded-lg bg-muted">
+                    {currentRoom.users.map((roomUser) => (
+                      <div key={roomUser.id} className="flex items-center justify-between p-2 rounded-lg bg-muted">
                         <div className="flex items-center space-x-2">
                           <Avatar className="h-8 w-8">
-                            <AvatarFallback style={{ backgroundColor: generateColor(user.username) }}>
-                              {user.username.slice(0, 2).toUpperCase()}
+                            <AvatarFallback style={{ backgroundColor: generateColor(roomUser.username) }}>
+                              {roomUser.username.slice(0, 2).toUpperCase()}
                             </AvatarFallback>
                           </Avatar>
                           <div>
                             <p className="font-medium flex items-center">
-                              {user.username}
-                              {user.isOwner && <Crown className="h-4 w-4 ml-1 text-yellow-500" />}
-                              {user.id === userId && <span className="ml-1 text-xs text-muted-foreground">(You)</span>}
+                              {roomUser.username}
+                              {roomUser.isOwner && <Crown className="h-4 w-4 ml-1 text-yellow-500" />}
+                              {roomUser.userId === user?.id && <span className="ml-1 text-xs text-muted-foreground">(You)</span>}
                             </p>
                             <p className="text-xs text-muted-foreground">
-                              Joined {formatTime(user.joinedAt)}
+                              Joined {formatTime(roomUser.joinedAt)}
                             </p>
                           </div>
                         </div>
-                        {isOwner && user.id !== userId && (
+                        {isOwner && roomUser.userId !== user?.id && (
                           <Button
                             variant="ghost"
                             size="sm"
                             onClick={() => {
-                              setUserToRemove(user.id);
+                              setUserToRemove(roomUser.userId);
                               setShowRemoveDialog(true);
                             }}
                           >
@@ -510,23 +431,23 @@ export default function ChatClient() {
           {/* Messages Area */}
           <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
             <div className="space-y-4">
-              {activeRoom.messages.map((msg, idx) => (
+              {currentRoom.messages.map((msg, idx) => (
                 <div key={msg.id || idx}>
-                  {msg.type === 'SYSTEM' ? (
+                  {msg.type === 'system' ? (
                     <div className="text-center">
                       <Badge variant="secondary" className="text-xs">
-                        {msg.message}
+                        {msg.content}
                       </Badge>
                     </div>
                   ) : (
                     <div
                       className={`flex flex-col ${
-                        msg.username === username ? 'items-end' : 'items-start'
+                        msg.userId === user?.id ? 'items-end' : 'items-start'
                       }`}
                     >
                       <div
                         className={`max-w-[80%] rounded-lg p-3 ${
-                          msg.username === username
+                          msg.userId === user?.id
                             ? 'bg-primary text-primary-foreground'
                             : 'bg-muted'
                         }`}
@@ -541,13 +462,13 @@ export default function ChatClient() {
                             </AvatarFallback>
                           </Avatar>
                           <p className="font-semibold text-sm">
-                            {msg.username === username ? 'You' : msg.username}
+                            {msg.userId === user?.id ? 'You' : msg.username}
                           </p>
                           <span className="text-xs opacity-70">
-                            {formatTime(msg.timestamp)}
+                            {formatTime(msg.createdAt)}
                           </span>
                         </div>
-                        <p className="whitespace-pre-wrap">{msg.message}</p>
+                        <p className="whitespace-pre-wrap">{msg.content}</p>
                       </div>
                     </div>
                   )}
@@ -555,7 +476,7 @@ export default function ChatClient() {
               ))}
               
               {/* Typing indicator */}
-              {activeRoom.isTyping.length > 0 && (
+              {currentRoom.isTyping && currentRoom.isTyping.length > 0 && (
                 <div className="flex items-center space-x-2 text-sm text-muted-foreground">
                   <div className="flex space-x-1">
                     <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce"></div>
@@ -563,9 +484,9 @@ export default function ChatClient() {
                     <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
                   </div>
                   <span>
-                    {activeRoom.isTyping.length === 1 
-                      ? `${activeRoom.isTyping[0]} is typing...`
-                      : `${activeRoom.isTyping.length} people are typing...`
+                    {currentRoom.isTyping.length === 1 
+                      ? `${currentRoom.isTyping[0]} is typing...`
+                      : `${currentRoom.isTyping.length} people are typing...`
                     }
                   </span>
                 </div>
@@ -596,7 +517,7 @@ export default function ChatClient() {
                 </PopoverContent>
               </Popover>
               <Button 
-                onClick={sendMessage} 
+                onClick={handleSendMessage} 
                 disabled={!message.trim() || !isConnected}
               >
                 <Send className="h-4 w-4 mr-2" />
