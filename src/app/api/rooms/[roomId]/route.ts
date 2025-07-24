@@ -5,9 +5,9 @@ const prisma = new PrismaClient();
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { roomId: string } }
+  { params }: { params: Promise<{ roomId: string }> }
 ) {
-  const roomId = params.roomId;
+  const { roomId } = await params;
   try {
     const room = await prisma.room.findUnique({
       where: { id: roomId },
@@ -37,9 +37,9 @@ export async function GET(
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { roomId: string } }
+  { params }: { params: Promise<{ roomId: string }> }
 ) {
-  const roomId = params.roomId;
+  const { roomId } = await params;
   try {
     const { userId, username } = await request.json();
     
@@ -123,9 +123,9 @@ export async function POST(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { roomId: string } }
+  { params }: { params: Promise<{ roomId: string }> }
 ) {
-  const roomId = params.roomId;
+  const { roomId } = await params;
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');

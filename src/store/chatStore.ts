@@ -415,7 +415,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   createRoom: async (name: string, username: string) => {
-    const { user } = get();
+    const { user, socket } = get();
     if (!user) throw new Error('User not set');
 
     console.log('Creating room:', name, 'for user:', username);
@@ -436,8 +436,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const room: Room = await response.json();
       console.log('Room created successfully:', room);
       
+      // Format messages to match the expected Message interface
+      const formattedMessages = (room.messages || []).map((msg: any) => ({
+        id: msg.id,
+        content: msg.content,
+        userId: msg.userId,
+        username: msg.username,
+        roomId: msg.roomId,
+        type: msg.type === 'SYSTEM' ? 'system' as const : 'user' as const,
+        createdAt: new Date(msg.createdAt)
+      }));
+
+      const roomWithFormattedMessages = {
+        ...room,
+        messages: formattedMessages,
+        unreadCount: 0,
+        isTyping: []
+      };
+      
+      // Join socket room if socket is connected
+      if (socket?.connected) {
+        console.log('Joining socket room after creation...');
+        socket.emit('join-room', { roomId: room.id, userId: user.id, username });
+      } else {
+        console.warn('Socket not connected, will join room when socket connects');
+      }
+      
       set((state) => ({
-        rooms: [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }],
+        rooms: [...state.rooms, roomWithFormattedMessages],
+        currentRoom: roomWithFormattedMessages,
         isLoading: false,
         error: null
       }));

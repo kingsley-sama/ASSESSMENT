@@ -50,6 +50,9 @@ export default function HomeClient() {
       // Create room
       const newRoomId = await createRoom(roomName.trim(), createUsername.trim());
       
+      // Clear form fields on success
+      setCreateUsername('');
+      setRoomName('');
       toast.success('Room created successfully!');
       router.push(`/chat/${newRoomId}`);
     } catch (error) {
@@ -103,6 +106,10 @@ export default function HomeClient() {
       
       // Join the room
       await joinRoom(roomId.trim(), joinUsername.trim());
+      
+      // Clear form fields on success
+      setJoinUsername('');
+      setRoomId('');
       
       toast.success('Joined room successfully!');
       router.push(`/chat/${roomId.trim()}`);
