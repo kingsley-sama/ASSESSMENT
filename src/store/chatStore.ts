@@ -76,16 +76,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
     
 
     console.log('Initializing socket connection...');
-    localStorage.debug = 'socket.io-client:socket';
-
-    const socket = io('localhost:3000',{
-      path: '/api/socket', // Make sure this matches your socket handler path
-      timeout: 30000,
+    
+    const socket = io('ws://localhost:3000',{
+      path: '/api/socket',
+      timeout: 50000,
       transports: ['websocket', 'polling'],
       autoConnect: false,
     });
     socket.connect();
-    
+    console.log('Socket initialized:', socket.id);
     socket.on('connect', () => {
       console.log('Socket connected:', socket.id);
       set({ socket, isConnected: true, error: null });
