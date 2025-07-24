@@ -61,22 +61,65 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
 
   initializeSocket: () => {
-    const socket = io();
+    const { socket: existingSocket } = get();
+    
+    // Don't create a new socket if one already exists and is connected
+    if (existingSocket?.connected) {
+      console.log('Socket already connected');
+      return;
+    }
+
+    // Disconnect existing socket if it exists
+    if (existingSocket) {
+      existingSocket.disconnect();
+    }
+    
+
+    console.log('Initializing socket connection...');
+    localStorage.debug = 'socket.io-client:socket';
+
+    const socket = io('localhost:3000',{
+      path: '/api/socket', // Make sure this matches your socket handler path
+      timeout: 30000,
+      transports: ['websocket', 'polling'],
+      autoConnect: false,
+    });
+    socket.connect();
     
     socket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('Socket connected:', socket.id);
       set({ socket, isConnected: true, error: null });
     });
 
-    socket.on('disconnect', () => {
-      console.log('Disconnected from server');
+    socket.on('disconnect', (reason) => {
+      console.log('Socket disconnected:', reason);
       set({ isConnected: false });
     });
 
-    socket.on('message', (message: Message) => {
+    socket.on('connect_error', (error) => {
+      console.error('Socket connection error:', error);
+      set({ 
+        error: 'Failed to connect to server',
+        isConnected: false 
+      });
+    });
+
+    // Socket event handlers
+    socket.on('receive-message', (messageData: any) => {
+      console.log('Received message:', messageData);
+      const message: Message = {
+        id: messageData.id,
+        content: messageData.message,
+        userId: messageData.userId,
+        username: messageData.username,
+        roomId: messageData.roomId || '',
+        type: messageData.type === 'SYSTEM' ? 'system' : 'user',
+        createdAt: new Date(messageData.timestamp),
+      };
+
       set((state) => {
         const updatedRooms = state.rooms.map(room => {
-          if (room.id === message.roomId) {
+          if (room.id === messageData.roomId) {
             const isCurrentRoom = state.currentRoom?.id === room.id;
             return {
               ...room,
@@ -87,7 +130,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           return room;
         });
 
-        const updatedCurrentRoom = state.currentRoom?.id === message.roomId
+        const updatedCurrentRoom = state.currentRoom && state.currentRoom.id === messageData.roomId
           ? { ...state.currentRoom, messages: [...state.currentRoom.messages, message] }
           : state.currentRoom;
 
@@ -98,125 +141,130 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     });
 
-    socket.on('userJoined', ({ user, roomId }: { user: User; roomId: string }) => {
+    socket.on('room-joined', ({ room, users }: { room: any; users: any[] }) => {
+      console.log('Room joined:', room);
       set((state) => {
-        const updatedRooms = state.rooms.map(room => {
-          if (room.id === roomId) {
-            return {
-              ...room,
-              users: [...room.users.filter(u => u.userId !== user.userId), user],
-            };
-          }
-          return room;
-        });
+        const roomWithTyping = {
+          ...room,
+          unreadCount: 0,
+          isTyping: [],
+          users: users
+        };
 
-        const updatedCurrentRoom = state.currentRoom?.id === roomId
-          ? { ...state.currentRoom, users: [...state.currentRoom.users.filter(u => u.userId !== user.userId), user] }
-          : state.currentRoom;
+        const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
+        const updatedRooms = existingRoomIndex >= 0 
+          ? state.rooms.map((r, i) => i === existingRoomIndex ? roomWithTyping : r)
+          : [...state.rooms, roomWithTyping];
 
-        return { 
+        return {
           rooms: updatedRooms,
-          currentRoom: updatedCurrentRoom 
+          currentRoom: roomWithTyping,
+          isLoading: false,
+          error: null
         };
       });
     });
 
-    socket.on('userLeft', ({ userId, roomId }: { userId: string; roomId: string }) => {
+    socket.on('users-updated', (users: any[]) => {
       set((state) => {
-        const updatedRooms = state.rooms.map(room => {
-          if (room.id === roomId) {
-            return {
-              ...room,
-              users: room.users.filter(u => u.userId !== userId),
-            };
-          }
-          return room;
-        });
+        if (!state.currentRoom) return state;
 
-        const updatedCurrentRoom = state.currentRoom?.id === roomId
-          ? { ...state.currentRoom, users: state.currentRoom.users.filter(u => u.userId !== userId) }
-          : state.currentRoom;
+        const updatedCurrentRoom = {
+          ...state.currentRoom,
+          users: users
+        };
 
-        return { 
-          rooms: updatedRooms,
-          currentRoom: updatedCurrentRoom 
+        const updatedRooms = state.rooms.map(room => 
+          room.id === state.currentRoom?.id 
+            ? { ...room, users: users }
+            : room
+        );
+
+        return {
+          currentRoom: updatedCurrentRoom,
+          rooms: updatedRooms
         };
       });
     });
 
-    socket.on('typing', ({ userId, username, roomId }: { userId: string; username: string; roomId: string }) => {
+    socket.on('user-typing', ({ username }: { username: string }) => {
+      const { user, currentRoom } = get();
+      if (user?.username === username || !currentRoom) return;
+
       set((state) => {
-        if (state.user?.id === userId) return state; // Don't show own typing
+        const updatedCurrentRoom = state.currentRoom ? {
+          ...state.currentRoom,
+          isTyping: [...(state.currentRoom.isTyping || []).filter(u => u !== username), username]
+        } : null;
 
-        const updatedRooms = state.rooms.map(room => {
-          if (room.id === roomId) {
-            const typingUsers = room.isTyping || [];
-            if (!typingUsers.includes(username)) {
-              return { ...room, isTyping: [...typingUsers, username] };
-            }
-          }
-          return room;
-        });
-
-        const updatedCurrentRoom = state.currentRoom?.id === roomId && state.user?.id !== userId
-          ? (() => {
-              const typingUsers = state.currentRoom.isTyping || [];
-              return !typingUsers.includes(username)
-                ? { ...state.currentRoom, isTyping: [...typingUsers, username] }
-                : state.currentRoom;
-            })()
-          : state.currentRoom;
-
-        return { 
-          rooms: updatedRooms,
-          currentRoom: updatedCurrentRoom 
-        };
+        return { currentRoom: updatedCurrentRoom };
       });
 
       // Clear typing after 3 seconds
       setTimeout(() => {
         set((state) => {
-          const updatedRooms = state.rooms.map(room => {
-            if (room.id === roomId) {
-              return { ...room, isTyping: (room.isTyping || []).filter(u => u !== username) };
-            }
-            return room;
-          });
+          const updatedCurrentRoom = state.currentRoom ? {
+            ...state.currentRoom,
+            isTyping: (state.currentRoom.isTyping || []).filter(u => u !== username)
+          } : null;
 
-          const updatedCurrentRoom = state.currentRoom?.id === roomId
-            ? { ...state.currentRoom, isTyping: (state.currentRoom.isTyping || []).filter(u => u !== username) }
-            : state.currentRoom;
-
-          return { 
-            rooms: updatedRooms,
-            currentRoom: updatedCurrentRoom 
-          };
+          return { currentRoom: updatedCurrentRoom };
         });
       }, 3000);
     });
 
-    set({ socket });
+    socket.on('user-stop-typing', ({ username }: { username: string }) => {
+      set((state) => {
+        const updatedCurrentRoom = state.currentRoom ? {
+          ...state.currentRoom,
+          isTyping: (state.currentRoom.isTyping || []).filter(u => u !== username)
+        } : null;
+
+        return { currentRoom: updatedCurrentRoom };
+      });
+    });
+
+    socket.on('removed-from-room', ({ roomId }: { roomId: string }) => {
+      set((state) => ({
+        rooms: state.rooms.filter(room => room.id !== roomId),
+        currentRoom: state.currentRoom?.id === roomId ? null : state.currentRoom,
+        error: 'You have been removed from the room'
+      }));
+    });
+
+    socket.on('error', (error: string) => {
+       const currentSocket = get().socket;
+      if (currentSocket) return;
+      console.error('Socket error:', error);
+      set({ error });
+    });
   },
 
   disconnectSocket: () => {
     const { socket } = get();
     if (socket) {
+      console.log('Disconnecting socket...');
       socket.disconnect();
       set({ socket: null, isConnected: false });
     }
   },
 
   setUser: (user) => {
+    console.log('Setting user:', user);
     set({ user });
   },
 
   joinRoom: async (roomId: string, username: string) => {
     const { user, socket } = get();
-    if (!user || !socket) return;
+    if (!user) {
+      throw new Error('User not set');
+    }
 
+    console.log('Joining room:', roomId, 'as', username);
     set({ isLoading: true, error: null });
 
     try {
+      // First, try to join via API
       const response = await fetch(`/api/rooms/${roomId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -229,24 +277,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const room: Room = await response.json();
+      console.log('Successfully joined room via API:', room);
       
-      // Add room to rooms if not already there
-      set((state) => {
-        const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
-        const updatedRooms = existingRoomIndex >= 0 
-          ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...room, unreadCount: 0, isTyping: [] } : r)
-          : [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }];
+      // Join socket room if socket is connected
+      if (socket?.connected) {
+        console.log('Joining socket room...');
+        socket.emit('join-room', { roomId, userId: user.id, username });
+      } else {
+        console.warn('Socket not connected, will join room when socket connects');
+        // Still update the state even if socket isn't connected
+        set((state) => {
+          const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
+          const updatedRooms = existingRoomIndex >= 0 
+            ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...room, unreadCount: 0, isTyping: [] } : r)
+            : [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }];
 
-        return {
-          rooms: updatedRooms,
-          currentRoom: { ...room, unreadCount: 0, isTyping: [] },
-          isLoading: false,
-          error: null
-        };
-      });
-
-      // Join socket room
-      socket.emit('joinRoom', { roomId, userId: user.id, username });
+          return {
+            rooms: updatedRooms,
+            currentRoom: { ...room, unreadCount: 0, isTyping: [] },
+            isLoading: false,
+            error: null
+          };
+        });
+      }
 
     } catch (error) {
       console.error('Error joining room:', error);
@@ -260,8 +313,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   leaveRoom: async (roomId: string) => {
     const { user, socket } = get();
-    if (!user || !socket) return;
+    if (!user) return;
 
+    console.log('Leaving room:', roomId);
     set({ isLoading: true, error: null });
 
     try {
@@ -272,8 +326,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if (!response.ok) {
         throw new Error('Failed to leave room');
       }
-
-      const result = await response.json();
 
       set((state) => {
         const updatedRooms = state.rooms.filter(room => room.id !== roomId);
@@ -288,7 +340,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       // Leave socket room
-      socket.emit('leaveRoom', { roomId, userId: user.id });
+      if (socket?.connected) {
+        socket.emit('leave-room', { roomId, userId: user.id, username: user.username });
+      }
 
     } catch (error) {
       console.error('Error leaving room:', error);
@@ -303,6 +357,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { user } = get();
     if (!user) throw new Error('User not set');
 
+    console.log('Creating room:', name, 'for user:', username);
     set({ isLoading: true, error: null });
 
     try {
@@ -313,10 +368,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create room');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to create room');
       }
 
       const room: Room = await response.json();
+      console.log('Room created successfully:', room);
       
       set((state) => ({
         rooms: [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }],
@@ -337,17 +394,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   sendMessage: (content: string, roomId: string) => {
     const { socket, user } = get();
-    if (!socket || !user) return;
+    if (!socket?.connected || !user) {
+      console.warn('Cannot send message: socket not connected or user not set');
+      set({ error: 'Unable to send message. Please check your connection.' });
+      return;
+    }
 
-    socket.emit('message', {
-      content,
+    console.log('Sending message:', content, 'to room:', roomId);
+    socket.emit('send-message', {
       roomId,
+      message: content,
       userId: user.id,
       username: user.username,
     });
   },
 
   setCurrentRoom: (roomId: string) => {
+    console.log('Setting current room:', roomId);
     set((state) => {
       const room = state.rooms.find(r => r.id === roomId);
       if (room) {
@@ -368,6 +431,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { user } = get();
     if (!user) return;
 
+    console.log('Loading user rooms for:', user.id);
     set({ isLoading: true, error: null });
 
     try {
@@ -377,6 +441,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
       const rooms: Room[] = await response.json();
+      console.log('Loaded rooms:', rooms);
       set({ 
         rooms: rooms.map(room => ({ ...room, unreadCount: 0, isTyping: [] })),
         isLoading: false,

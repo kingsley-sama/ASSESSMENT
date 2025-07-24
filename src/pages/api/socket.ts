@@ -340,6 +340,7 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
   });
 
   res.end();
+  res.end();
 };
 
 export default SocketHandler;

@@ -63,18 +63,15 @@ export default function ChatClient() {
 
   // Handle async params resolution
   useEffect(() => {
-    const resolveParams = async () => {
-      const resolvedParams = await params;
-      const resolvedRoomId = resolvedParams.roomId as string;
-      setRoomId(resolvedRoomId);
-    };
-    
-    resolveParams();
+    if (params?.roomId) {
+    setRoomId(params.roomId as string);
+
+  }
   }, [params]);
 
   // Initialize socket
   useEffect(() => {
-    if (!socket) {
+    if (!socket || !socket.connected) {
       initializeSocket();
     }
   }, [socket, initializeSocket]);
@@ -91,20 +88,25 @@ export default function ChatClient() {
     }
   }, [error, clearError, toast]);
 
-  // Join room when roomId is available
+  // Join room when roomId is available and socket is connected
   useEffect(() => {
-    if (roomId && user && socket && isConnected) {
+    if (roomId && user && isConnected) {
       // Check if we're already in this room
       if (currentRoom?.id !== roomId) {
         joinRoom(roomId, user.username).catch((error) => {
           console.error('Failed to join room:', error);
+          toast({
+            title: "Error",
+            description: "Failed to join room. Redirecting to home.",
+            variant: "destructive",
+          });
           router.push('/');
         });
       } else {
         setCurrentRoom(roomId);
       }
     }
-  }, [roomId, user, socket, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router]);
+  }, [roomId, user, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router, toast]);
 
   // Auto-scroll to bottom of messages
   const scrollToBottom = useCallback(() => {
@@ -125,55 +127,81 @@ export default function ChatClient() {
   useEffect(() => {
     if (!socket || !roomId) return;
 
-    const handleUserJoined = ({ user: joinedUser, roomId: eventRoomId }: { user: any; roomId: string }) => {
-      if (eventRoomId === roomId) {
+    const handleUserJoined = ({ username, userId, joinedAt }: { username: string; userId: string; joinedAt: string }) => {
+      toast({
+        title: "User joined",
+        description: `${username} joined the room`,
+      });
+    };
+
+    const handleUserLeft = ({ userId, username }: { userId: string; username: string }) => {
+      toast({
+        title: "User left",
+        description: `${username} left the room`,
+      });
+    };
+
+    const handleUserRemoved = ({ userId, username }: { userId: string; username: string }) => {
+      if (userId === user?.id) {
         toast({
-          title: "User joined",
-          description: `${joinedUser.username} joined the room`,
+          title: "Removed from room",
+          description: "You have been removed from this room",
+          variant: "destructive",
+        });
+        router.push('/');
+      } else {
+        toast({
+          title: "User removed",
+          description: `${username} was removed from the room`,
         });
       }
     };
 
-    const handleUserLeft = ({ userId, username, roomId: eventRoomId }: { userId: string; username: string; roomId: string }) => {
-      if (eventRoomId === roomId) {
+    const handleRemovedFromRoom = ({ roomId: removedRoomId }: { roomId: string }) => {
+      if (removedRoomId === roomId) {
         toast({
-          title: "User left",
-          description: `${username} left the room`,
+          title: "Removed from room",
+          description: "You have been removed from this room",
+          variant: "destructive",
         });
+        router.push('/');
       }
     };
 
-    const handleUserRemoved = ({ userId, username, roomId: eventRoomId }: { userId: string; username: string; roomId: string }) => {
-      if (eventRoomId === roomId) {
-        if (userId === user?.id) {
-          toast({
-            title: "Removed from room",
-            description: "You have been removed from this room",
-            variant: "destructive",
-          });
-          router.push('/');
-        } else {
-          toast({
-            title: "User removed",
-            description: `${username} was removed from the room`,
-          });
-        }
-      }
+    const handleOwnershipTransferred = ({ newOwnerId, newOwnerUsername }: { newOwnerId: string; newOwnerUsername: string }) => {
+      toast({
+        title: "New room owner",
+        description: `${newOwnerUsername} is now the room owner`,
+      });
     };
 
-    socket.on('userJoined', handleUserJoined);
-    socket.on('userLeft', handleUserLeft);
-    socket.on('userRemoved', handleUserRemoved);
+    socket.on('user-joined', handleUserJoined);
+    socket.on('user-left', handleUserLeft);
+    socket.on('user-removed', handleUserRemoved);
+    socket.on('removed-from-room', handleRemovedFromRoom);
+    socket.on('ownership-transferred', handleOwnershipTransferred);
 
     return () => {
-      socket.off('userJoined', handleUserJoined);
-      socket.off('userLeft', handleUserLeft);
-      socket.off('userRemoved', handleUserRemoved);
+      socket.off('user-joined', handleUserJoined);
+      socket.off('user-left', handleUserLeft);
+      socket.off('user-removed', handleUserRemoved);
+      socket.off('removed-from-room', handleRemovedFromRoom);
+      socket.off('ownership-transferred', handleOwnershipTransferred);
     };
   }, [socket, roomId, user?.id, toast, router]);
+  
 
   const handleSendMessage = () => {
-    if (!message.trim() || !roomId || !isConnected) return;
+    if (!message.trim() || !roomId || !isConnected) {
+      if (!isConnected) {
+        toast({
+          title: "Connection Error",
+          description: "Not connected to server. Please refresh the page.",
+          variant: "destructive",
+        });
+      }
+      return;
+    }
     
     stopTyping();
     sendSocketMessage(message.trim(), roomId);
@@ -188,12 +216,19 @@ export default function ChatClient() {
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setMessage(e.target.value);
-    handleTyping();
+    const value = e.target.value;
+    setMessage(value);
+    
+    // Only trigger typing if we have a value and are connected
+    if (value.trim() && isConnected) {
+      handleTyping();
+    } else {
+      stopTyping();
+    }
   };
 
   const handleTyping = () => {
-    if (!isTyping && isConnected && socket && user) {
+    if (!isTyping && isConnected && socket && user && roomId) {
       setIsTyping(true);
       socket.emit('typing', { roomId, userId: user.id, username: user.username });
     }
@@ -208,9 +243,9 @@ export default function ChatClient() {
   };
 
   const stopTyping = () => {
-    if (isTyping && socket && user) {
+    if (isTyping && socket && user && roomId) {
       setIsTyping(false);
-      socket.emit('stopTyping', { roomId, userId: user.id, username: user.username });
+      socket.emit('stop-typing', { roomId, userId: user.id, username: user.username });
     }
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -219,23 +254,31 @@ export default function ChatClient() {
 
   const handleLeaveRoom = async () => {
     if (roomId) {
-      await leaveRoom(roomId);
-      router.push('/');
+      try {
+        await leaveRoom(roomId);
+        router.push('/');
+      } catch (error) {
+        console.error('Error leaving room:', error);
+        // Still redirect even if there's an error
+        router.push('/');
+      }
     }
   };
 
   const copyRoomId = () => {
-    navigator.clipboard.writeText(roomId);
-    toast({
-      title: 'Room ID copied!',
-      description: 'Share this with others to join the chat.',
-    });
+    if (roomId) {
+      navigator.clipboard.writeText(roomId);
+      toast({
+        title: 'Room ID copied!',
+        description: 'Share this with others to join the chat.',
+      });
+    }
   };
 
   const removeUser = (userIdToRemove: string) => {
     if (!isOwner || !socket || !user) return;
     
-    socket.emit('removeUser', {
+    socket.emit('remove-user', {
       roomId,
       userIdToRemove,
       requesterId: user.id,
@@ -254,8 +297,12 @@ export default function ChatClient() {
     return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+
   // Show loading state
-  if (!roomId || isLoading) {
+  if (!roomId || isLoading || !user) {
+    {
+      console.log('roomid: ' + roomId, "isloading: ", isLoading, "user: ", user);
+    }
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
@@ -272,6 +319,11 @@ export default function ChatClient() {
         <div className="text-center">
           <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
           <p className="mt-4 text-lg">Loading room...</p>
+          {!isConnected && (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Connecting to server...
+            </p>
+          )}
         </div>
       </div>
     );
@@ -305,8 +357,10 @@ export default function ChatClient() {
                     variant={room.id === currentRoom.id ? 'secondary' : 'ghost'}
                     className="w-full justify-start mb-1 h-auto p-3"
                     onClick={() => {
-                      setCurrentRoom(room.id);
-                      router.push(`/chat/${room.id}`);
+                      if (room.id !== currentRoom.id) {
+                        setCurrentRoom(room.id);
+                        router.push(`/chat/${room.id}`);
+                      }
                     }}
                   >
                     <MessageSquare className="h-4 w-4 mr-2 flex-shrink-0" />
@@ -502,7 +556,7 @@ export default function ChatClient() {
                 value={message}
                 onChange={handleInputChange}
                 onKeyPress={handleKeyPress}
-                placeholder="Type your message..."
+                placeholder={isConnected ? "Type your message..." : "Connecting..."}
                 className="flex-1"
                 disabled={!isConnected}
               />
@@ -524,6 +578,11 @@ export default function ChatClient() {
                 Send
               </Button>
             </div>
+            {!isConnected && (
+              <p className="text-xs text-muted-foreground mt-2 text-center">
+                Reconnecting to server...
+              </p>
+            )}
           </div>
         </Card>
       </div>

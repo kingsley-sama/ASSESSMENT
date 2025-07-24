@@ -5,8 +5,10 @@ const prisma = new PrismaClient();
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { roomId: string } }
+  context: { params: { roomId: string } }
 ) {
+  const { params } = context;
+  const roomId = params.roomId;
   try {
     const room = await prisma.room.findUnique({
       where: { id: params.roomId },
@@ -35,15 +37,17 @@ export async function GET(
 }
 
 export async function POST(
-  request: NextRequest,
-  { params }: { params: { roomId: string } }
+   request: NextRequest,
+  context: { params: { roomId: string } }
 ) {
+  const { params } = context;
+  const roomId = params.roomId;
   try {
     const { userId, username } = await request.json();
     
     // Check if room exists
     const room = await prisma.room.findUnique({
-      where: { id: params.roomId },
+      where: { id: roomId },
       include: { users: true },
     });
 
@@ -56,7 +60,7 @@ export async function POST(
     if (existingUser) {
       // User already in room, just return the room data
       const updatedRoom = await prisma.room.findUnique({
-        where: { id: params.roomId },
+        where: { id: roomId },
         include: {
           users: true,
           messages: {
@@ -71,7 +75,7 @@ export async function POST(
 
     // Add user to room
     const updatedRoom = await prisma.room.update({
-      where: { id: params.roomId },
+      where: { id: roomId },
       data: {
         users: {
           create: {
@@ -102,8 +106,10 @@ export async function POST(
 
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { roomId: string } }
+  context: { params: { roomId: string } }
 ) {
+  const { params } = context;
+  const roomId = params.roomId;
   try {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
@@ -115,14 +121,14 @@ export async function DELETE(
     // Remove user from room
     await prisma.roomUser.deleteMany({
       where: {
-        roomId: params.roomId,
+        roomId: roomId,
         userId,
       },
     });
 
     // Check if room is empty
     const remainingUsers = await prisma.roomUser.count({
-      where: { roomId: params.roomId },
+      where: { roomId: roomId },
     });
 
     if (remainingUsers === 0) {
