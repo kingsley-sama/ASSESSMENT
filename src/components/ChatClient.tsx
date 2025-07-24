@@ -43,6 +43,7 @@ export default function ChatClient() {
   const [userToRemove, setUserToRemove] = useState<string | null>(null);
   const [showRemoveDialog, setShowRemoveDialog] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [userInitialized, setUserInitialized] = useState(false); // Track if we've tried to initialize user
 
   const {
     socket,
@@ -59,15 +60,47 @@ export default function ChatClient() {
     setCurrentRoom,
     loadUserRooms,
     clearError,
+    setUser, // Add setUser to the destructured properties
   } = useChatStore();
 
   // Handle async params resolution
   useEffect(() => {
     if (params?.roomId) {
-    setRoomId(params.roomId as string);
-
-  }
+      setRoomId(params.roomId as string);
+    }
   }, [params]);
+
+  // Initialize user from localStorage if not already set
+  useEffect(() => {
+    if (!user && !userInitialized) {
+      setUserInitialized(true);
+      const storedUser = localStorage.getItem('user');
+      if (storedUser) {
+        try {
+          const userData = JSON.parse(storedUser);
+          setUser(userData);
+          console.log('User restored from localStorage:', userData);
+        } catch (error) {
+          console.error('Error parsing stored user data:', error);
+          localStorage.removeItem('user');
+          // Redirect to home to set up user if localStorage is corrupted
+          setTimeout(() => router.push('/'), 1000);
+        }
+      } else {
+        console.log('No user found in localStorage, redirecting to home');
+        // No user data found, redirect to setup after a short delay
+        setTimeout(() => router.push('/'), 1000);
+      }
+    }
+  }, [user, userInitialized, setUser, router]);
+
+  // Add debug logging for messages
+  useEffect(() => {
+    console.log('Current room messages:', currentRoom?.messages?.length || 0);
+    console.log('Socket connected:', isConnected);
+    console.log('Current room ID:', currentRoom?.id);
+    console.log('Target room ID:', roomId);
+  }, [currentRoom?.messages, isConnected, currentRoom?.id, roomId]);
 
   // Initialize socket
   useEffect(() => {
@@ -108,7 +141,6 @@ export default function ChatClient() {
     }
   }, [roomId, user, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router, toast]);
 
-  // Auto-scroll to bottom of messages
   const scrollToBottom = useCallback(() => {
     if (scrollAreaRef.current) {
       const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
@@ -118,12 +150,10 @@ export default function ChatClient() {
     }
   }, []);
 
-  // Auto-scroll when messages change
   useEffect(() => {
     scrollToBottom();
   }, [currentRoom?.messages, scrollToBottom]);
 
-  // Socket event listeners for room-specific events
   useEffect(() => {
     if (!socket || !roomId) return;
 
@@ -205,6 +235,7 @@ export default function ChatClient() {
     
     stopTyping();
     sendSocketMessage(message.trim(), roomId);
+    setCurrentRoom(roomId);
     setMessage('');
   };
 
@@ -298,16 +329,54 @@ export default function ChatClient() {
   };
 
 
-  // Show loading state
-  if (!roomId || isLoading || !user) {
-    {
-      console.log('roomid: ' + roomId, "isloading: ", isLoading, "user: ", user);
-    }
+  // Show loading state - improved conditions
+  if (!roomId) {
     return (
       <div className="flex items-center justify-center h-screen">
         <div className="text-center">
           <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4 text-lg">Loading...</p>
+          <p className="mt-4 text-lg">Loading room...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user && userInitialized) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-lg">No user session found</p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Redirecting to home page...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user && !userInitialized) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-lg">Setting up user session...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4 text-lg">Joining room...</p>
+          {!isConnected && (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Connecting to server...
+            </p>
+          )}
         </div>
       </div>
     );

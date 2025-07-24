@@ -55,10 +55,13 @@ export async function POST(
       return NextResponse.json({ error: 'Room not found' }, { status: 404 });
     }
 
-    // Check if user is already in the room
-    const existingUser = room.users.find(user => user.userId === userId);
-    if (existingUser) {
-      // User already in room, just return the room data
+    // First, check if username already exists in the room
+    const existingUserByUsername = room.users.find(user => user.username === username);
+    
+    if (existingUserByUsername) {
+      // Username exists in room, join as that existing user
+      console.log(`User with username "${username}" already exists in room, joining as existing user`);
+      
       const updatedRoom = await prisma.room.findUnique({
         where: { id: roomId },
         include: {
@@ -70,10 +73,42 @@ export async function POST(
           },
         },
       });
-      return NextResponse.json(updatedRoom);
+      
+      // Return the room data with the existing user info
+      return NextResponse.json({
+        ...updatedRoom,
+        joinedAsExistingUser: true,
+        existingUserId: existingUserByUsername.userId
+      });
     }
 
-    // Add user to room
+    // Check if the provided userId is already in the room (different username case)
+    const existingUserById = room.users.find(user => user.userId === userId);
+    if (existingUserById) {
+      // Same userId but potentially different username, update the username
+      await prisma.roomUser.update({
+        where: {
+          id: existingUserById.id,
+        },
+        data: {
+          username: username,
+        },
+      });
+
+      const updatedRoom = await prisma.room.findUnique({
+        where: { id: roomId },
+        include: {
+          users: true,
+          messages: {
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
+        },
+      });
+      
+      return NextResponse.json(updatedRoom);
+    }
     const updatedRoom = await prisma.room.update({
       where: { id: roomId },
       data: {

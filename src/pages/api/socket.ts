@@ -51,6 +51,8 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
       try {
         const { roomId, username, userId } = data;
         
+        console.log(`User ${username} (${userId}) joining room ${roomId} via socket`);
+        
         // Join socket room
         socket.join(roomId);
         
@@ -77,7 +79,10 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
               ...user,
               isOwner: user.userId === room.ownerId,
             })),
+            messages: room.messages,
           });
+          
+          console.log(`User ${username} successfully joined room ${roomId} via socket`);
           
           // Notify others
           socket.to(roomId).emit('user-joined', {
@@ -92,6 +97,8 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
             isOwner: user.userId === room.ownerId,
           }));
           io.to(roomId).emit('users-updated', updatedUsers);
+        } else {
+          socket.emit('error', 'Room not found');
         }
       } catch (error) {
         console.error('Error joining room:', error);
@@ -119,12 +126,14 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
           message: savedMessage.content,
           username: savedMessage.username,
           userId: savedMessage.userId,
+          roomId: savedMessage.roomId,
           timestamp: savedMessage.createdAt,
           type: savedMessage.type,
         };
         
-        // Broadcast to all users in room
+        // Broadcast to all users in room (including sender)
         io.to(roomId).emit('receive-message', messageData);
+        console.log('Message broadcasted to room:', roomId, messageData);
       } catch (error) {
         console.error('Error sending message:', error);
         socket.emit('error', 'Failed to send message');

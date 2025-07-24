@@ -118,8 +118,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
 
       set((state) => {
+        // Only add message if it doesn't already exist (prevent duplicates)
         const updatedRooms = state.rooms.map(room => {
           if (room.id === messageData.roomId) {
+            const messageExists = room.messages.some(msg => msg.id === message.id);
+            if (messageExists) {
+              return room;
+            }
+            
             const isCurrentRoom = state.currentRoom?.id === room.id;
             return {
               ...room,
@@ -131,7 +137,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
         });
 
         const updatedCurrentRoom = state.currentRoom && state.currentRoom.id === messageData.roomId
-          ? { ...state.currentRoom, messages: [...state.currentRoom.messages, message] }
+          ? (() => {
+              const messageExists = state.currentRoom.messages.some(msg => msg.id === message.id);
+              if (messageExists) {
+                return state.currentRoom;
+              }
+              return { ...state.currentRoom, messages: [...state.currentRoom.messages, message] };
+            })()
           : state.currentRoom;
 
         return { 
@@ -141,14 +153,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
     });
 
-    socket.on('room-joined', ({ room, users }: { room: any; users: any[] }) => {
-      console.log('Room joined:', room);
+    socket.on('room-joined', ({ room, users, messages }: { room: any; users: any[]; messages?: any[] }) => {
+      console.log('Room joined:', room, 'with', messages?.length || 0, 'messages');
       set((state) => {
         const roomWithTyping = {
           ...room,
           unreadCount: 0,
           isTyping: [],
-          users: users
+          users: users,
+          messages: messages || []
         };
 
         const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
@@ -252,6 +265,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setUser: (user) => {
     console.log('Setting user:', user);
     set({ user });
+    // Store user in localStorage for persistence
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('user', JSON.stringify(user));
+    }
   },
 
   joinRoom: async (roomId: string, username: string) => {
@@ -276,30 +293,46 @@ export const useChatStore = create<ChatState>((set, get) => ({
         throw new Error(errorData.error || 'Failed to join room');
       }
 
-      const room: Room = await response.json();
-      console.log('Successfully joined room via API:', room);
+      const roomData = await response.json();
+      console.log('Successfully joined room via API:', roomData);
+      
+      // If user joined as existing user, update the user in the store
+      if (roomData.joinedAsExistingUser && roomData.existingUserId) {
+        console.log('Joined as existing user, updating user ID:', roomData.existingUserId);
+        const updatedUser = { ...user, id: roomData.existingUserId };
+        set({ user: updatedUser });
+        // Update localStorage as well
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('user', JSON.stringify(updatedUser));
+        }
+      }
+
+      // Clean the room data (remove the extra properties we added)
+      const { joinedAsExistingUser, existingUserId, ...room } = roomData;
       
       // Join socket room if socket is connected
+      const currentUserId = roomData.joinedAsExistingUser ? roomData.existingUserId : user.id;
       if (socket?.connected) {
         console.log('Joining socket room...');
-        socket.emit('join-room', { roomId, userId: user.id, username });
+        socket.emit('join-room', { roomId, userId: currentUserId, username });
       } else {
         console.warn('Socket not connected, will join room when socket connects');
-        // Still update the state even if socket isn't connected
-        set((state) => {
-          const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
-          const updatedRooms = existingRoomIndex >= 0 
-            ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...room, unreadCount: 0, isTyping: [] } : r)
-            : [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }];
-
-          return {
-            rooms: updatedRooms,
-            currentRoom: { ...room, unreadCount: 0, isTyping: [] },
-            isLoading: false,
-            error: null
-          };
-        });
       }
+
+      // Update state
+      set((state) => {
+        const existingRoomIndex = state.rooms.findIndex(r => r.id === room.id);
+        const updatedRooms = existingRoomIndex >= 0 
+          ? state.rooms.map((r, i) => i === existingRoomIndex ? { ...room, unreadCount: 0, isTyping: [] } : r)
+          : [...state.rooms, { ...room, unreadCount: 0, isTyping: [] }];
+
+        return {
+          rooms: updatedRooms,
+          currentRoom: { ...room, unreadCount: 0, isTyping: [] },
+          isLoading: false,
+          error: null
+        };
+      });
 
     } catch (error) {
       console.error('Error joining room:', error);
@@ -400,13 +433,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return;
     }
 
-    console.log('Sending message:', content, 'to room:', roomId);
+    console.log('Sending message:', content, 'to room:', roomId, 'from user:', user.username);
     socket.emit('send-message', {
       roomId,
       message: content,
       userId: user.id,
       username: user.username,
     });
+    
+    // Clear any errors
+    set({ error: null });
   },
 
   setCurrentRoom: (roomId: string) => {
