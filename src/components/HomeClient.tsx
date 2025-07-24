@@ -13,13 +13,14 @@ import { Loader2, MessageCircle, Plus, Users } from 'lucide-react';
 import { ThemeToggle } from '../components/ThemeToggle';
 
 export default function HomeClient() {
-  const [username, setUsername] = useState('');
+  const [createUsername, setCreateUsername] = useState('');
+  const [joinUsername, setJoinUsername] = useState('');
   const [roomName, setRoomName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   
-  const { setUser, createRoom, joinRoom, initializeSocket, isLoading, error, clearError } = useChatStore();
+  const { setUser, createRoom, joinRoom, initializeSocket, isLoading, error, clearError, user } = useChatStore();
   const router = useRouter();
 
   useEffect(() => {
@@ -35,7 +36,7 @@ export default function HomeClient() {
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !roomName.trim()) {
+    if (!createUsername.trim() || !roomName.trim()) {
       toast.error('Please fill in all fields');
       return;
     }
@@ -44,10 +45,10 @@ export default function HomeClient() {
     try {
       // Set user first
       const userId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      setUser({ id: userId, username: username.trim() });
+      setUser({ id: userId, username: createUsername.trim() });
       
       // Create room
-      const newRoomId = await createRoom(roomName.trim(), username.trim());
+      const newRoomId = await createRoom(roomName.trim(), createUsername.trim());
       
       toast.success('Room created successfully!');
       router.push(`/chat/${newRoomId}`);
@@ -61,18 +62,47 @@ export default function HomeClient() {
 
   const handleJoinRoom = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !roomId.trim()) {
+    if (!joinUsername.trim() || !roomId.trim()) {
       toast.error('Please fill in all fields');
       return;
     }
 
     setIsJoining(true);
     try {
-      const userId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      setUser({ id: userId, username: username.trim() });
+      // Check if we need to create a new user or use existing one
+      let currentUser = user;
       
-  
-      await joinRoom(roomId.trim(), username.trim());
+      // First, try to get room info to check if user already exists
+      const roomResponse = await fetch(`/api/rooms/${roomId.trim()}`);
+      if (roomResponse.ok) {
+        const roomData = await roomResponse.json();
+        const existingUser = roomData.users?.find((u: any) => u.username === joinUsername.trim());
+        
+        if (existingUser) {
+          // User already exists in room, use their existing ID
+          currentUser = { id: existingUser.userId, username: joinUsername.trim() };
+          setUser(currentUser);
+          console.log('Using existing user:', currentUser);
+        } else if (!currentUser) {
+          // Create new user only if one doesn't exist and user isn't already in room
+          const userId = `user-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+          currentUser = { id: userId, username: joinUsername.trim() };
+          setUser(currentUser);
+          console.log('Created new user:', currentUser);
+        } else {
+          // Update existing user with new username if needed
+          currentUser = { ...currentUser, username: joinUsername.trim() };
+          setUser(currentUser);
+          console.log('Updated existing user:', currentUser);
+        }
+      } else {
+        // Room doesn't exist
+        toast.error('Room not found. Please check the room ID.');
+        return;
+      }
+      
+      // Join the room
+      await joinRoom(roomId.trim(), joinUsername.trim());
       
       toast.success('Joined room successfully!');
       router.push(`/chat/${roomId.trim()}`);
@@ -131,8 +161,8 @@ export default function HomeClient() {
                       id="create-username"
                       type="text"
                       placeholder="Enter your name"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      value={createUsername}
+                      onChange={(e) => setCreateUsername(e.target.value)}
                       disabled={isCreating || isLoading}
                     />
                   </div>
@@ -175,8 +205,8 @@ export default function HomeClient() {
                       id="join-username"
                       type="text"
                       placeholder="Enter your name"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
+                      value={joinUsername}
+                      onChange={(e) => setJoinUsername(e.target.value)}
                       disabled={isJoining || isLoading}
                     />
                   </div>
