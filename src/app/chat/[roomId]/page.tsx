@@ -1,4 +1,4 @@
-import ChatClient from '@/components/ChatClientFixed';
+import ChatClient from '@/components/chatClientUpdated';
 
 
 export default function ChatRoom() {

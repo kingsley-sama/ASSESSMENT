@@ -76,15 +76,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
     
 
     console.log('Initializing socket connection...');
-    
-    const socket = io('ws://localhost:3000',{
-      path: '/api/socket',
-      timeout: 50000,
+    localStorage.debug = 'socket.io-client:socket';
+
+    // Updated: Remove the API path since we're now using standalone server
+    const socket = io('ws://localhost:3000', {
+      timeout: 30000,
       transports: ['websocket', 'polling'],
       autoConnect: false,
     });
     socket.connect();
-    console.log('Socket initialized:', socket.id);
+    
     socket.on('connect', () => {
       console.log('Socket connected:', socket.id);
       set({ socket, isConnected: true, error: null });
@@ -108,12 +109,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.log('Received message:', messageData);
       const message: Message = {
         id: messageData.id,
-        content: messageData.message,
+        content: messageData.message || messageData.content, // Handle both formats
         userId: messageData.userId,
         username: messageData.username,
         roomId: messageData.roomId || '',
         type: messageData.type === 'SYSTEM' ? 'system' : 'user',
-        createdAt: new Date(messageData.timestamp),
+        createdAt: new Date(messageData.timestamp || messageData.createdAt),
       };
 
       set((state) => {

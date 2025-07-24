@@ -47,16 +47,17 @@ A modern, feature-rich real-time chat application built with Next.js, Socket.IO,
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/kingsley-sama/ASSESSMENT
+   git clone <repository-url>
    cd ASSESSMENT
    ```
 
 2. **Install dependencies**
    ```bash
-   # install dependencies
-   npm install  --legacy-peer-deps
+   npm install
+   # or
+   bun install
    ```
-   
+
 3. **Set up environment variables**
    Create a `.env` file in the root directory:
    ```env
@@ -89,14 +90,16 @@ A modern, feature-rich real-time chat application built with Next.js, Socket.IO,
    ```
 
 6. **Open your browser**
-   Navigate to [http://localhost:3000](http://localhost:3001)
+   Navigate to [http://localhost:3000](http://localhost:3000)
 
 ### Testing
 
 Run the end-to-end tests with Playwright:
 
 ```bash
-npx playwright install --legacy-peer-deps
+# Install Playwright browsers (first time only)
+npx playwright install
+
 # Run tests
 npm run test:e2e
 # or

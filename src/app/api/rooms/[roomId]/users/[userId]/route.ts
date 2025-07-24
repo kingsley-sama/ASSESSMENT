@@ -17,7 +17,7 @@ export async function DELETE(
     
     // Check if requester is room owner
     const room = await prisma.room.findUnique({
-      where: { id: context.params.roomId },
+      where: { id: params.roomId },
       include: { users: true },
     });
     
@@ -30,7 +30,7 @@ export async function DELETE(
     }
     
     // Find user to remove
-    const userToRemove = room.users.find(user => user.userId === context.params.userId);
+    const userToRemove = room.users.find(user => user.userId === params.userId);
     if (!userToRemove) {
       return NextResponse.json({ error: 'User not in room' }, { status: 404 });
     }
@@ -38,15 +38,15 @@ export async function DELETE(
     // Remove user
     await prisma.roomUser.deleteMany({
       where: {
-        roomId: context.params.roomId,
-        userId: context.params.userId,
+        roomId: params.roomId,
+        userId: params.userId,
       },
     });
     
     // Create removal message
     await prisma.message.create({
       data: {
-        roomId: context.params.roomId,
+        roomId: params.roomId,
         content: `${userToRemove.username} was removed from the room`,
         username: 'System',
         userId: 'system',

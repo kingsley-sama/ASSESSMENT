@@ -1,21 +1,14 @@
-import { NextApiRequest, NextApiResponse } from 'next';
-import { Server } from 'socket.io';
+import { createServer } from "http";
+import next from "next";
+import { Server } from "socket.io";
 import { PrismaClient } from '@prisma/client';
-import type { Server as HTTPServer } from 'http';
-import type { Socket as NetSocket } from 'net';
 
-interface SocketServer extends HTTPServer {
-  io?: Server | undefined;
-}
+const dev = process.env.NODE_ENV !== "production";
+const hostname = process.env.HOSTNAME || "localhost";
+const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-interface SocketWithIO extends NetSocket {
-  server: SocketServer;
-}
-
-interface NextApiResponseWithSocket extends NextApiResponse {
-  socket: SocketWithIO;
-}
-
+const app = next({ dev, hostname, port });
+const handle = app.getRequestHandler();
 const prisma = new PrismaClient();
 
 interface TypingUsers {
@@ -27,25 +20,23 @@ interface TypingUsers {
   };
 }
 
-const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
-  if (res.socket?.server?.io) {
-    return res.end();
-  }
-
-  const io = new Server(res.socket?.server, {
-    path: '/api/socket',
-    cors: {
-      origin: "*",
-      methods: ["GET", "POST"]
-    }
+app.prepare().then(() => {
+  const httpServer = createServer((req, res) => {
+    handle(req, res);
   });
-  
-  res.socket.server.io = io;
-  
+
+  const io = new Server(httpServer, {
+    cors: {
+      origin: "*", // Adjust this in production
+      methods: ["GET", "POST"],
+    },
+    transports: ['websocket', 'polling'],
+  });
+
   const typingUsers: TypingUsers = {};
 
-  io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
+  io.on("connection", (socket) => {
+    console.log("✅ New client connected:", socket.id);
 
     socket.on('join-room', async (data) => {
       try {
@@ -53,8 +44,30 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         
         console.log(`User ${username} (${userId}) joining room ${roomId} via socket`);
         
+        if (!roomId || !username || !userId) {
+          socket.emit('error', 'Missing required data for joining room');
+          return;
+        }
+
+        // Check if user is already in the room via socket
+        const socketRooms = Array.from(socket.rooms);
+        if (socketRooms.includes(roomId)) {
+          console.log(`User ${username} already in socket room ${roomId}`);
+          return;
+        }
+
+        // Verify user is actually a member of the room in database
+        const roomUser = await prisma.roomUser.findFirst({
+          where: { roomId, userId }
+        });
+
+        if (!roomUser) {
+          socket.emit('error', 'You are not a member of this room');
+          return;
+        }
+        
         // Join socket room
-        socket.join(roomId);
+        await socket.join(roomId);
         
         // Store user data in socket
         socket.data = { userId, username, roomId };
@@ -74,7 +87,13 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         if (room) {
           // Send room data to user
           socket.emit('room-joined', {
-            room,
+            room: {
+              ...room,
+              users: room.users.map(user => ({
+                ...user,
+                isOwner: user.userId === room.ownerId,
+              })),
+            },
             users: room.users.map(user => ({
               ...user,
               isOwner: user.userId === room.ownerId,
@@ -84,7 +103,7 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
           
           console.log(`User ${username} successfully joined room ${roomId} via socket`);
           
-          // Notify others
+          // Notify others in the room
           socket.to(roomId).emit('user-joined', {
             username,
             userId,
@@ -110,6 +129,23 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
       try {
         const { roomId, message, username, userId } = data;
         
+        console.log('Sending message:', { roomId, message, username, userId });
+        
+        if (!roomId || !message || !username || !userId) {
+          socket.emit('error', 'Missing required data for sending message');
+          return;
+        }
+
+        // Verify user is in the room
+        const roomUser = await prisma.roomUser.findFirst({
+          where: { roomId, userId }
+        });
+
+        if (!roomUser) {
+          socket.emit('error', 'You are not a member of this room');
+          return;
+        }
+        
         // Save message to database
         const savedMessage = await prisma.message.create({
           data: {
@@ -124,10 +160,12 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         const messageData = {
           id: savedMessage.id,
           message: savedMessage.content,
+          content: savedMessage.content, // Include both for compatibility
           username: savedMessage.username,
           userId: savedMessage.userId,
           roomId: savedMessage.roomId,
           timestamp: savedMessage.createdAt,
+          createdAt: savedMessage.createdAt, // Include both for compatibility  
           type: savedMessage.type,
         };
         
@@ -141,45 +179,66 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
     });
 
     socket.on('user-typing', (data) => {
-      const { roomId, username } = data;
-      
-      // Clear existing timeout for this user
-      if (typingUsers[roomId]?.[socket.id]) {
-        clearTimeout(typingUsers[roomId][socket.id].timeout);
-      }
-      
-      // Initialize room if needed
-      if (!typingUsers[roomId]) {
-        typingUsers[roomId] = {};
-      }
-      
-      // Set new timeout
-      const timeout = setTimeout(() => {
-        if (typingUsers[roomId]?.[socket.id]) {
-          delete typingUsers[roomId][socket.id];
-          socket.to(roomId).emit('user-stop-typing', { username });
+      try {
+        const { roomId, username } = data;
+        
+        if (!roomId || !username) {
+          return;
         }
-      }, 3000);
-      
-      typingUsers[roomId][socket.id] = { username, timeout };
-      
-      // Notify others that user is typing
-      socket.to(roomId).emit('user-typing', { username });
+        
+        // Clear existing timeout for this user
+        if (typingUsers[roomId]?.[socket.id]) {
+          clearTimeout(typingUsers[roomId][socket.id].timeout);
+        }
+        
+        // Initialize room if needed
+        if (!typingUsers[roomId]) {
+          typingUsers[roomId] = {};
+        }
+        
+        // Set new timeout
+        const timeout = setTimeout(() => {
+          if (typingUsers[roomId]?.[socket.id]) {
+            delete typingUsers[roomId][socket.id];
+            socket.to(roomId).emit('user-stop-typing', { username });
+          }
+        }, 3000);
+        
+        typingUsers[roomId][socket.id] = { username, timeout };
+        
+        // Notify others that user is typing
+        socket.to(roomId).emit('user-typing', { username });
+      } catch (error) {
+        console.error('Error handling typing:', error);
+      }
     });
 
     socket.on('user-stop-typing', (data) => {
-      const { roomId, username } = data;
-      
-      if (typingUsers[roomId]?.[socket.id]) {
-        clearTimeout(typingUsers[roomId][socket.id].timeout);
-        delete typingUsers[roomId][socket.id];
-        socket.to(roomId).emit('user-stop-typing', { username });
+      try {
+        const { roomId, username } = data;
+        
+        if (!roomId || !username) {
+          return;
+        }
+        
+        if (typingUsers[roomId]?.[socket.id]) {
+          clearTimeout(typingUsers[roomId][socket.id].timeout);
+          delete typingUsers[roomId][socket.id];
+          socket.to(roomId).emit('user-stop-typing', { username });
+        }
+      } catch (error) {
+        console.error('Error handling stop typing:', error);
       }
     });
 
     socket.on('remove-user', async (data) => {
       try {
         const { roomId, userIdToRemove, requesterId } = data;
+        
+        if (!roomId || !userIdToRemove || !requesterId) {
+          socket.emit('error', 'Missing required data for removing user');
+          return;
+        }
         
         // Verify requester is room owner
         const room = await prisma.room.findUnique({
@@ -207,7 +266,7 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         });
         
         // Create system message
-        await prisma.message.create({
+        const systemMessage = await prisma.message.create({
           data: {
             roomId,
             content: `${userToRemove.username} was removed from the room`,
@@ -225,6 +284,19 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
           removedUserSocket.emit('removed-from-room', { roomId });
           removedUserSocket.leave(roomId);
         }
+        
+        // Broadcast system message
+        io.to(roomId).emit('receive-message', {
+          id: systemMessage.id,
+          message: systemMessage.content,
+          content: systemMessage.content,
+          username: systemMessage.username,
+          userId: systemMessage.userId,
+          roomId: systemMessage.roomId,
+          timestamp: systemMessage.createdAt,
+          createdAt: systemMessage.createdAt,
+          type: systemMessage.type,
+        });
         
         // Notify room about user removal
         io.to(roomId).emit('user-removed', {
@@ -251,7 +323,13 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
       try {
         const { roomId, userId, username } = data;
         
-        socket.leave(roomId);
+        if (!roomId || !userId || !username) {
+          return;
+        }
+        
+        console.log(`User ${username} leaving room ${roomId}`);
+        
+        await socket.leave(roomId);
         
         // Remove from database
         await prisma.roomUser.deleteMany({
@@ -259,7 +337,7 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         });
         
         // Create leave message
-        await prisma.message.create({
+        const leaveMessage = await prisma.message.create({
           data: {
             roomId,
             content: `${username} left the room`,
@@ -281,15 +359,19 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
           return;
         }
         
+        let newOwnerId = room.ownerId;
+        
         // Handle ownership transfer if needed
         if (room.ownerId === userId && room.users.length > 0) {
           const newOwner = room.users[0];
+          newOwnerId = newOwner.userId;
+          
           await prisma.room.update({
             where: { id: roomId },
             data: { ownerId: newOwner.userId },
           });
           
-          await prisma.message.create({
+          const ownershipMessage = await prisma.message.create({
             data: {
               roomId,
               content: `${newOwner.username} is now the room owner`,
@@ -303,7 +385,33 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
             newOwnerId: newOwner.userId,
             newOwnerUsername: newOwner.username,
           });
+          
+          // Broadcast ownership message
+          io.to(roomId).emit('receive-message', {
+            id: ownershipMessage.id,
+            message: ownershipMessage.content,
+            content: ownershipMessage.content,
+            username: ownershipMessage.username,
+            userId: ownershipMessage.userId,
+            roomId: ownershipMessage.roomId,
+            timestamp: ownershipMessage.createdAt,
+            createdAt: ownershipMessage.createdAt,
+            type: ownershipMessage.type,
+          });
         }
+        
+        // Broadcast leave message
+        socket.to(roomId).emit('receive-message', {
+          id: leaveMessage.id,
+          message: leaveMessage.content,
+          content: leaveMessage.content,
+          username: leaveMessage.username,
+          userId: leaveMessage.userId,
+          roomId: leaveMessage.roomId,
+          timestamp: leaveMessage.createdAt,
+          createdAt: leaveMessage.createdAt,
+          type: leaveMessage.type,
+        });
         
         // Notify room about user leaving
         socket.to(roomId).emit('user-left', { username, userId });
@@ -311,7 +419,7 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         // Send updated user list
         const updatedUsers = room.users.map(user => ({
           ...user,
-          isOwner: user.userId === (room.ownerId === userId ? room.users[0]?.userId : room.ownerId),
+          isOwner: user.userId === newOwnerId,
         }));
         io.to(roomId).emit('users-updated', updatedUsers);
         
@@ -320,12 +428,12 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
       }
     });
 
-    socket.on('disconnect', async () => {
-      console.log('User disconnected:', socket.id);
+    socket.on("disconnect", async (reason) => {
+      console.log("❌ Client disconnected:", socket.id, 'Reason:', reason);
       
       // Clean up typing indicators
       Object.keys(typingUsers).forEach(roomId => {
-        if (typingUsers[roomId][socket.id]) {
+        if (typingUsers[roomId] && typingUsers[roomId][socket.id]) {
           const { username } = typingUsers[roomId][socket.id];
           clearTimeout(typingUsers[roomId][socket.id].timeout);
           delete typingUsers[roomId][socket.id];
@@ -338,18 +446,25 @@ const SocketHandler = (req: NextApiRequest, res: NextApiResponseWithSocket) => {
         const { roomId, userId, username } = socket.data;
         
         try {
-          // You might want to handle graceful disconnect here
-          // For now, we'll just notify others that user is offline
+          // Notify others that user is offline
           socket.to(roomId).emit('user-disconnected', { username, userId });
         } catch (error) {
           console.error('Error handling disconnect:', error);
         }
       }
     });
+
+    // Handle errors
+    socket.on('error', (error) => {
+      console.error('Socket error:', error);
+    });
   });
 
-  res.end();
-  res.end();
-};
-
-export default SocketHandler;
+  httpServer.listen(port, hostname, () => {
+    console.log(`🚀 Server ready at http://${hostname}:${port}`);
+    console.log('✅ Socket.IO server initialized successfully');
+  });
+}).catch((err) => {
+  console.error("❌ Error starting server:", err);
+  process.exit(1);
+});

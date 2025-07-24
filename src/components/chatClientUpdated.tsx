@@ -9,10 +9,12 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Badge } from "@/components/ui/badge"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useChatStore } from "@/store/chatStore"
 import { useToast } from "@/hooks/use-toast"
-import { LogOut, Send, Copy, MessageSquare, Users, Crown, Smile, Menu, X } from "lucide-react"
+import { LogOut, Send, Copy, MessageSquare, Users, Crown, UserX, Smile, Menu, X } from "lucide-react"
 import { EmojiPicker } from "@/components/EmojiPicker"
 import { ThemeToggle } from "@/components/ThemeToggle"
 
@@ -98,12 +100,19 @@ export default function ChatClient() {
     }
   }, [user, userInitialized, setUser, router])
 
-  // Initialize socket
+  // Initialize socket once
   useEffect(() => {
-    if (!socket || !socket.connected) {
+    if (!socket) {
       initializeSocket()
     }
-  }, [socket, initializeSocket])
+  }, [socket])
+
+  // Load user rooms when user is available (only once)
+  useEffect(() => {
+    if (user && rooms.length === 0) {
+      loadUserRooms()
+    }
+  }, [user])
 
   // Handle errors
   useEffect(() => {
@@ -115,7 +124,7 @@ export default function ChatClient() {
       })
       clearError()
     }
-  }, [error, clearError, toast])
+  }, [error, toast])
 
   // Join room when roomId is available and socket is connected
   useEffect(() => {
@@ -129,13 +138,13 @@ export default function ChatClient() {
             description: "Failed to join room. Redirecting to home.",
             variant: "destructive",
           })
-          router.push("/")
+          setTimeout(() => router.push("/"), 2000)
         })
       } else {
         setCurrentRoom(roomId)
       }
     }
-  }, [roomId, user, isConnected, currentRoom?.id, joinRoom, setCurrentRoom, router, toast])
+  }, [roomId, user, isConnected, currentRoom?.id, router, toast])
 
   const scrollToBottom = useCallback(() => {
     if (scrollAreaRef.current) {
@@ -214,12 +223,25 @@ export default function ChatClient() {
     socket.on("removed-from-room", handleRemovedFromRoom)
     socket.on("ownership-transferred", handleOwnershipTransferred)
 
+    // Handle socket errors
+    const handleSocketError = (error: string) => {
+      console.error("Socket error:", error)
+      toast({
+        title: "Connection Error",
+        description: error,
+        variant: "destructive",
+      })
+    }
+
+    socket.on("error", handleSocketError)
+
     return () => {
       socket.off("user-joined", handleUserJoined)
       socket.off("user-left", handleUserLeft)
       socket.off("user-removed", handleUserRemoved)
       socket.off("removed-from-room", handleRemovedFromRoom)
       socket.off("ownership-transferred", handleOwnershipTransferred)
+      socket.off("error", handleSocketError)
     }
   }, [socket, roomId, user?.id, toast, router])
 
@@ -234,8 +256,7 @@ export default function ChatClient() {
   const handleTyping = () => {
     if (!isTyping && isConnected && socket && user && roomId) {
       setIsTyping(true)
-      // Updated: Use the correct event name from server
-      socket.emit("user-typing", { roomId, username: user.username })
+      socket.emit("typing", { roomId, userId: user.id, username: user.username })
     }
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current)
@@ -248,13 +269,13 @@ export default function ChatClient() {
   const stopTyping = () => {
     if (isTyping && socket && user && roomId) {
       setIsTyping(false)
-      // Updated: Use the correct event name from server
-      socket.emit("user-stop-typing", { roomId, username: user.username })
+      socket.emit("stop-typing", { roomId, userId: user.id, username: user.username })
     }
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current)
     }
   }
+  
 
   const handleSendMessage = () => {
     if (!message.trim() || !roomId || !isConnected) {
@@ -316,6 +337,46 @@ export default function ChatClient() {
     }
   }
 
+  const removeUser = (userIdToRemove: string) => {
+    if (!socket || !user) return
+    
+    // Call API to remove user
+    fetch(`/api/rooms/${roomId}/users/${userIdToRemove}?requesterId=${user.id}`, {
+      method: 'DELETE',
+    })
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('Failed to remove user');
+      }
+      return response.json();
+    })
+    .then(() => {
+      toast({
+        title: "User removed",
+        description: "User has been removed from the room",
+      });
+    })
+    .catch(error => {
+      console.error('Error removing user:', error);
+      toast({
+        title: "Error",
+        description: "Failed to remove user",
+        variant: "destructive",
+      });
+    });
+    
+    // Also emit socket event for real-time updates
+    socket.emit('remove-user', {
+      roomId,
+      userIdToRemove,
+      requesterId: user.id,
+    });
+    
+    setShowRemoveDialog(false);
+    setUserToRemove(null);
+  }
+
+
   // Show loading state - improved conditions
   if (!roomId) {
     return (
@@ -375,6 +436,9 @@ export default function ChatClient() {
     )
   }
 
+  const currentUser = currentRoom.users.find(u => u.userId === user?.id)
+  const isOwner = currentUser?.isOwner || false
+
   return (
     <div className="flex h-screen bg-background">
       {/* Mobile Overlay */}
@@ -394,7 +458,7 @@ export default function ChatClient() {
         {/* Header */}
         <div className="p-4 lg:p-4 md:p-2 border-b">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold lg:block md:hidden">Chat Room</h2>
+            <h2 className="text-lg font-semibold lg:block md:hidden">Chat Rooms</h2>
             <div className="flex items-center gap-2">
               <ThemeToggle />
               <Button
@@ -416,7 +480,7 @@ export default function ChatClient() {
           <div className="space-y-2 lg:block md:hidden">
             <div className="flex items-center gap-2">
               <Badge variant="secondary" className="font-mono text-xs">
-                {currentRoom.name}
+                {currentRoom.name || `Room ${roomId.slice(-6)}`}
               </Badge>
               <Button variant="ghost" size="icon" onClick={copyRoomId} className="h-6 w-6" title="Copy Room ID">
                 <Copy className="h-3 w-3" />
@@ -435,6 +499,82 @@ export default function ChatClient() {
           </div>
         </div>
 
+        {/* Rooms List */}
+        <div className="border-b lg:block md:hidden">
+          <div className="p-4">
+            <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+              <MessageSquare className="h-4 w-4" />
+              Your Rooms ({rooms.length})
+            </h3>
+            <div className="space-y-1 max-h-32 overflow-y-auto">
+              {rooms.map((room) => (
+                <Button
+                  key={room.id}
+                  variant={room.id === currentRoom.id ? "secondary" : "ghost"}
+                  className="w-full justify-start text-left h-auto p-2"
+                  onClick={() => {
+                    if (room.id !== currentRoom.id) {
+                      router.push(`/chat/${room.id}`)
+                    }
+                  }}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate text-xs">
+                      {room.name || `Room ${room.id.slice(-6)}`}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {room.users.length} {room.users.length === 1 ? "member" : "members"}
+                    </div>
+                  </div>
+                  {room.unreadCount > 0 && (
+                    <Badge variant="destructive" className="ml-2 h-5 text-xs">
+                      {room.unreadCount}
+                    </Badge>
+                  )}
+                </Button>
+              ))}
+              {rooms.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-2">
+                  No rooms yet
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile/Tablet Rooms List */}
+        <div className="border-b lg:hidden md:block hidden">
+          <div className="p-2">
+            <div className="flex flex-col items-center space-y-2">
+              <MessageSquare className="h-4 w-4" />
+              <div className="text-xs text-center font-medium">{rooms.length}</div>
+            </div>
+            <div className="space-y-1 mt-2">
+              {rooms.slice(0, 3).map((room) => (
+                <Button
+                  key={room.id}
+                  variant={room.id === currentRoom.id ? "secondary" : "ghost"}
+                  size="sm"
+                  className="w-full p-1"
+                  onClick={() => {
+                    if (room.id !== currentRoom.id) {
+                      router.push(`/chat/${room.id}`)
+                    }
+                  }}
+                  title={room.name || `Room ${room.id.slice(-6)}`}
+                >
+                  <div className="w-2 h-2 rounded-full bg-primary mx-auto"></div>
+                  {room.unreadCount > 0 && (
+                    <div className="absolute -top-1 -right-1 w-3 h-3 bg-destructive rounded-full text-[8px] flex items-center justify-center text-white">
+                      {room.unreadCount > 9 ? '9+' : room.unreadCount}
+                    </div>
+                  )}
+                </Button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* Users List */}
         <div className="flex-1 overflow-hidden">
           <div className="p-4 lg:p-4 md:p-2">
@@ -449,7 +589,7 @@ export default function ChatClient() {
               </div>
             </div>
 
-            <ScrollArea className="h-[calc(100vh-300px)]">
+            <ScrollArea className="h-[calc(100vh-400px)]">
               <div className="space-y-2">
                 {currentRoom.users?.map((roomUser) => (
                   <div
@@ -468,19 +608,58 @@ export default function ChatClient() {
                     <div className="flex-1 min-w-0 lg:block md:hidden">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium truncate">{roomUser.username}</span>
-                        {roomUser.userId === currentRoom.ownerId && <Crown className="h-3 w-3 text-yellow-500" />}
+                        {roomUser.isOwner && <Crown className="h-3 w-3 text-yellow-500" />}
                         {roomUser.userId === user?.id && (
                           <Badge variant="secondary" className="text-xs px-1 py-0">
                             You
                           </Badge>
                         )}
                       </div>
+                      {isOwner && roomUser.userId !== user?.id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            setUserToRemove(roomUser.userId)
+                            setShowRemoveDialog(true)
+                          }}
+                          className="mt-1 h-6 text-xs"
+                        >
+                          <UserX className="h-3 w-3 text-destructive mr-1" />
+                          Remove
+                        </Button>
+                      )}
                     </div>
                   </div>
                 ))}
               </div>
             </ScrollArea>
           </div>
+        </div>
+
+        {/* Join New Room Button */}
+        <div className="p-4 border-t mt-auto lg:block md:hidden">
+          <Button 
+            className="w-full" 
+            variant="outline"
+            onClick={() => router.push('/')}
+            size="sm"
+          >
+            <MessageSquare className="h-4 w-4 mr-2" />
+            Join New Room
+          </Button>
+        </div>
+
+        {/* Mobile Join Button */}
+        <div className="p-2 border-t mt-auto lg:hidden md:block hidden">
+          <Button 
+            className="w-full" 
+            variant="outline"
+            onClick={() => router.push('/')}
+            size="sm"
+          >
+            <MessageSquare className="h-3 w-3" />
+          </Button>
         </div>
       </div>
 
@@ -496,7 +675,10 @@ export default function ChatClient() {
               </Button>
 
               <div>
-                <h1 className="text-xl font-semibold">{currentRoom.name}</h1>
+                <h1 className="text-xl font-semibold flex items-center gap-2">
+                  {currentRoom.name || `Room ${roomId.slice(-6)}`}
+                  {isOwner && <Crown className="h-5 w-5 text-yellow-500" />}
+                </h1>
                 <p className="text-sm text-muted-foreground">{currentRoom.users?.length || 0} members</p>
               </div>
             </div>
@@ -629,6 +811,29 @@ export default function ChatClient() {
           )}
         </div>
       </div>
+
+      {/* Remove User Dialog */}
+      <AlertDialog open={showRemoveDialog} onOpenChange={setShowRemoveDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove User</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove this user from the room? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setUserToRemove(null)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => userToRemove && removeUser(userToRemove)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

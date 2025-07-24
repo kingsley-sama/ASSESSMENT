@@ -5,13 +5,12 @@ const prisma = new PrismaClient();
 
 export async function GET(
   request: NextRequest,
-  context: { params: { roomId: string } }
+  { params }: { params: { roomId: string } }
 ) {
-  const { params } = context;
   const roomId = params.roomId;
   try {
     const room = await prisma.room.findUnique({
-      where: { id: params.roomId },
+      where: { id: roomId },
       include: {
         users: true,
         messages: {
@@ -37,15 +36,13 @@ export async function GET(
 }
 
 export async function POST(
-   request: NextRequest,
-  context: { params: { roomId: string } }
+  request: NextRequest,
+  { params }: { params: { roomId: string } }
 ) {
-  const { params } = context;
   const roomId = params.roomId;
   try {
     const { userId, username } = await request.json();
     
-    // Check if room exists
     const room = await prisma.room.findUnique({
       where: { id: roomId },
       include: { users: true },
@@ -55,11 +52,9 @@ export async function POST(
       return NextResponse.json({ error: 'Room not found' }, { status: 404 });
     }
 
-    // First, check if username already exists in the room
     const existingUserByUsername = room.users.find(user => user.username === username);
     
     if (existingUserByUsername) {
-      // Username exists in room, join as that existing user
       console.log(`User with username "${username}" already exists in room, joining as existing user`);
       
       const updatedRoom = await prisma.room.findUnique({
@@ -74,7 +69,6 @@ export async function POST(
         },
       });
       
-      // Return the room data with the existing user info
       return NextResponse.json({
         ...updatedRoom,
         joinedAsExistingUser: true,
@@ -82,17 +76,11 @@ export async function POST(
       });
     }
 
-    // Check if the provided userId is already in the room (different username case)
     const existingUserById = room.users.find(user => user.userId === userId);
     if (existingUserById) {
-      // Same userId but potentially different username, update the username
       await prisma.roomUser.update({
-        where: {
-          id: existingUserById.id,
-        },
-        data: {
-          username: username,
-        },
+        where: { id: existingUserById.id },
+        data: { username },
       });
 
       const updatedRoom = await prisma.room.findUnique({
@@ -100,31 +88,25 @@ export async function POST(
         include: {
           users: true,
           messages: {
-            orderBy: {
-              createdAt: 'asc',
-            },
+            orderBy: { createdAt: 'asc' },
           },
         },
       });
       
       return NextResponse.json(updatedRoom);
     }
+
     const updatedRoom = await prisma.room.update({
       where: { id: roomId },
       data: {
         users: {
-          create: {
-            userId,
-            username,
-          },
+          create: { userId, username },
         },
       },
       include: {
         users: true,
         messages: {
-          orderBy: {
-            createdAt: 'asc',
-          },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
@@ -141,9 +123,8 @@ export async function POST(
 
 export async function DELETE(
   request: NextRequest,
-  context: { params: { roomId: string } }
+  { params }: { params: { roomId: string } }
 ) {
-  const { params } = context;
   const roomId = params.roomId;
   try {
     const { searchParams } = new URL(request.url);
@@ -153,36 +134,25 @@ export async function DELETE(
       return NextResponse.json({ error: 'User ID required' }, { status: 400 });
     }
 
-    // Remove user from room
     await prisma.roomUser.deleteMany({
-      where: {
-        roomId: roomId,
-        userId,
-      },
+      where: { roomId, userId },
     });
 
-    // Check if room is empty
     const remainingUsers = await prisma.roomUser.count({
-      where: { roomId: roomId },
+      where: { roomId },
     });
 
     if (remainingUsers === 0) {
-      // Delete the room if empty
-      await prisma.room.delete({
-        where: { id: params.roomId },
-      });
+      await prisma.room.delete({ where: { id: roomId } });
       return NextResponse.json({ deleted: true });
     }
 
-    // Get updated room
     const updatedRoom = await prisma.room.findUnique({
-      where: { id: params.roomId },
+      where: { id: roomId },
       include: {
         users: true,
         messages: {
-          orderBy: {
-            createdAt: 'asc',
-          },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
